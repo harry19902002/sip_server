@@ -9,6 +9,7 @@ type PageKey =
   | "tasks"
   | "emergency"
   | "content"
+  | "terminals"
   | "resources"
   | "alarms"
   | "reports"
@@ -32,6 +33,7 @@ const navGroups: Array<{ label: string; items: Array<{ key: PageKey; label: stri
   {
     label: "运营管理",
     items: [
+      { key: "terminals", label: "终端列表", icon: "▤" },
       { key: "resources", label: "分区与设备", icon: "⌘" },
       { key: "alarms", label: "监控告警", icon: "△", badge: "4" },
       { key: "reports", label: "报表审计", icon: "▦" },
@@ -60,6 +62,21 @@ const deviceRows = [
   { id: "SPK-D3-018", name: "宿舍 D3 东侧音柱", zone: "学生宿舍区 / D3", ip: "10.20.8.18", type: "IP 音柱", status: "离线", last: "12 分钟前" },
   { id: "GW-GYM-01", name: "体育馆模拟广播网关", zone: "体育场馆 / 体育馆", ip: "10.20.12.9", type: "SIP 网关", status: "在线空闲", last: "1 分钟前" },
   { id: "SPK-SQ-021", name: "中心广场东侧音柱", zone: "室外公共区 / 中心广场", ip: "10.20.15.21", type: "IP 音柱", status: "异常", last: "3 分钟前" },
+];
+
+const terminalRows = [
+  { id: "SPK-A1-001", name: "A1 一层走廊音箱", extension: "81001", zone: "教学楼", location: "A1 / 一层东侧", ip: "10.20.1.31", type: "IP 音箱", status: "在线空闲", last: "刚刚", capability: "广播 · 监听", priority: 1 },
+  { id: "SPK-A1-002", name: "A1 二层走廊音箱", extension: "81002", zone: "教学楼", location: "A1 / 二层西侧", ip: "10.20.1.32", type: "IP 音箱", status: "播放中", last: "刚刚", capability: "广播 · 监听", priority: 0 },
+  { id: "SPK-B2-014", name: "B2 教室组音箱", extension: "81014", zone: "教学楼", location: "B2 / 201—208", ip: "10.20.2.14", type: "IP 音箱", status: "在线空闲", last: "8 秒前", capability: "广播 · 分组", priority: 1 },
+  { id: "SPK-OA-006", name: "行政楼六层音箱", extension: "82006", zone: "行政办公区", location: "行政楼 / 六层", ip: "10.20.4.6", type: "IP 音箱", status: "在线空闲", last: "16 秒前", capability: "广播 · 监听", priority: 1 },
+  { id: "GW-OA-01", name: "行政楼模拟广播网关", extension: "82901", zone: "行政办公区", location: "行政楼 / 机房", ip: "10.20.4.9", type: "SIP 网关", status: "在线空闲", last: "12 秒前", capability: "广播 · 分区", priority: 1 },
+  { id: "SPK-D1-032", name: "宿舍 D1 北侧音柱", extension: "83032", zone: "学生宿舍区", location: "D1 / 北侧入口", ip: "10.20.8.32", type: "IP 音柱", status: "在线空闲", last: "22 秒前", capability: "广播 · 监听", priority: 1 },
+  { id: "SPK-D3-018", name: "宿舍 D3 东侧音柱", extension: "83018", zone: "学生宿舍区", location: "D3 / 东侧入口", ip: "10.20.8.18", type: "IP 音柱", status: "离线", last: "12 分钟前", capability: "广播 · 监听", priority: 3 },
+  { id: "SPK-SQ-021", name: "中心广场东侧音柱", extension: "84021", zone: "室外公共区", location: "中心广场 / 东侧", ip: "10.20.15.21", type: "IP 音柱", status: "异常", last: "3 分钟前", capability: "广播 · 监听", priority: 2 },
+  { id: "SPK-GATE-02", name: "南门入口音柱", extension: "84002", zone: "室外公共区", location: "校园南门", ip: "10.20.15.2", type: "IP 音柱", status: "在线空闲", last: "6 秒前", capability: "广播 · 监听", priority: 1 },
+  { id: "GW-GYM-01", name: "体育馆广播网关", extension: "85001", zone: "体育场馆", location: "体育馆 / 弱电间", ip: "10.20.12.9", type: "SIP 网关", status: "在线空闲", last: "1 分钟前", capability: "广播 · 分区", priority: 1 },
+  { id: "SPK-FIELD-08", name: "田径场西侧音柱", extension: "85008", zone: "体育场馆", location: "田径场 / 西看台", ip: "10.20.12.18", type: "IP 音柱", status: "播放中", last: "刚刚", capability: "广播 · 监听", priority: 0 },
+  { id: "SPK-GYM-12", name: "体育馆看台音箱", extension: "85012", zone: "体育场馆", location: "体育馆 / 二层看台", ip: "10.20.12.22", type: "IP 音箱", status: "在线空闲", last: "19 秒前", capability: "广播 · 监听", priority: 1 },
 ];
 
 const taskRows = [
@@ -294,6 +311,108 @@ function Realtime({ onStarted }: { onStarted: () => void }) {
   );
 }
 
+function Terminals({ notify }: { notify: (message: string) => void }) {
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState("全部状态");
+  const [selectedZone, setSelectedZone] = useState("全部终端");
+  const [showOffline, setShowOffline] = useState(true);
+  const [multiSelect, setMultiSelect] = useState(false);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [sortBy, setSortBy] = useState("状态优先");
+  const [view, setView] = useState<"cards" | "table">("cards");
+  const [activeTerminal, setActiveTerminal] = useState<(typeof terminalRows)[number] | null>(null);
+
+  const visibleTerminals = useMemo(() => {
+    const normalizedQuery = query.trim().toLowerCase();
+    return terminalRows
+      .filter((terminal) => selectedZone === "全部终端" || terminal.zone === selectedZone)
+      .filter((terminal) => showOffline || terminal.status !== "离线")
+      .filter((terminal) => statusFilter === "全部状态" || terminal.status === statusFilter)
+      .filter((terminal) => !normalizedQuery || [terminal.name, terminal.id, terminal.extension, terminal.ip].some((value) => value.toLowerCase().includes(normalizedQuery)))
+      .sort((a, b) => sortBy === "分机号" ? a.extension.localeCompare(b.extension) : sortBy === "终端名称" ? a.name.localeCompare(b.name, "zh-CN") : a.priority - b.priority);
+  }, [query, selectedZone, showOffline, sortBy, statusFilter]);
+
+  const selectedVisibleCount = visibleTerminals.filter((terminal) => selected.includes(terminal.id)).length;
+  const onlineCount = terminalRows.filter((terminal) => terminal.status === "在线空闲" || terminal.status === "播放中").length;
+  const toggleTerminal = (id: string) => setSelected((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
+  const toggleMultiSelect = () => {
+    setMultiSelect((current) => {
+      if (current) setSelected([]);
+      return !current;
+    });
+  };
+  const runAction = (action: string, terminal: (typeof terminalRows)[number]) => {
+    if (terminal.status === "离线" && action !== "查看详情") {
+      notify(`${terminal.name} 当前离线，无法执行${action}`);
+      return;
+    }
+    notify(`${action}指令已发送至 ${terminal.name}`);
+  };
+
+  return (
+    <div className="page terminals-page">
+      <div className="page-heading split-heading">
+        <div><div className="breadcrumb">运营管理 / 终端列表</div><h1>终端列表</h1><p>按分区快速查找 SIP 终端，查看实时状态并执行单点或批量广播操作。</p></div>
+        <div className="heading-actions"><button className="button button-secondary" onClick={() => notify("终端状态已刷新")}>↻ 刷新状态</button><button className="button button-primary" disabled={!selected.length} onClick={() => notify(`已为 ${selected.length} 台终端创建批量广播任务`)}>◉ 发起广播{selected.length ? `（${selected.length}）` : ""}</button></div>
+      </div>
+
+      <section className="terminal-summary" aria-label="终端状态概览">
+        <div><span className="terminal-summary-icon all">▤</span><span><small>全部终端</small><b>{terminalRows.length}</b></span></div>
+        <div><span className="terminal-summary-icon online">●</span><span><small>在线可用</small><b>{onlineCount}</b></span></div>
+        <div><span className="terminal-summary-icon playing">◉</span><span><small>正在播放</small><b>{terminalRows.filter((terminal) => terminal.status === "播放中").length}</b></span></div>
+        <div><span className="terminal-summary-icon issue">!</span><span><small>异常 / 离线</small><b>{terminalRows.filter((terminal) => terminal.status === "异常" || terminal.status === "离线").length}</b></span></div>
+      </section>
+
+      <section className="terminal-filter-panel" aria-label="终端筛选">
+        <div className="terminal-filter-main">
+          <label><span>运行状态</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option>全部状态</option><option>在线空闲</option><option>播放中</option><option>异常</option><option>离线</option></select></label>
+          <label className="terminal-search"><span>搜索终端</span><div className="search-field compact"><i>⌕</i><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="名称、SIP ID、分机号或 IP" /></div></label>
+        </div>
+        <div className="terminal-filter-tools">
+          <label className="inline-switch"><span>显示离线</span><input type="checkbox" checked={showOffline} onChange={(event) => setShowOffline(event.target.checked)} /><i /></label>
+          <label className="inline-switch"><span>多选</span><input type="checkbox" checked={multiSelect} onChange={toggleMultiSelect} /><i /></label>
+          <label><span>排序</span><select value={sortBy} onChange={(event) => setSortBy(event.target.value)}><option>状态优先</option><option>分机号</option><option>终端名称</option></select></label>
+          <div className="view-switch" aria-label="视图切换"><button className={view === "cards" ? "active" : ""} onClick={() => setView("cards")} aria-label="卡片视图">▦</button><button className={view === "table" ? "active" : ""} onClick={() => setView("table")} aria-label="表格视图">☷</button></div>
+        </div>
+      </section>
+
+      <div className="terminal-layout">
+        <aside className="terminal-zone-panel">
+          <div className="tree-heading"><div><span className="section-kicker">组织</span><b>终端分区</b></div><em>{onlineCount}/{terminalRows.length} 在线</em></div>
+          <button className={selectedZone === "全部终端" ? "terminal-zone active" : "terminal-zone"} onClick={() => setSelectedZone("全部终端")}><span>⌂</span><b>全部终端</b><em>{terminalRows.length}</em></button>
+          {zones.map((zone) => {
+            const zoneTerminals = terminalRows.filter((terminal) => terminal.zone === zone.name);
+            return <button className={selectedZone === zone.name ? "terminal-zone active" : "terminal-zone"} key={zone.name} onClick={() => setSelectedZone(zone.name)}><span>⌘</span><b>{zone.name}</b><em>{zoneTerminals.filter((terminal) => terminal.status !== "离线" && terminal.status !== "异常").length}/{zoneTerminals.length}</em></button>;
+          })}
+          <div className="terminal-zone-note"><span>●</span><div><b>状态持续同步</b><small>最近更新：刚刚</small></div></div>
+        </aside>
+
+        <section className="terminal-results">
+          <div className="terminal-results-head"><div><b>{selectedZone}</b><span>显示 {visibleTerminals.length} 台终端</span></div>{multiSelect && <div className="selection-actions"><span>已选 <b>{selected.length}</b> 台</span><button onClick={() => setSelected(Array.from(new Set([...selected, ...visibleTerminals.map((terminal) => terminal.id)])))}>全选当前</button><button onClick={() => setSelected((current) => visibleTerminals.filter((terminal) => !current.includes(terminal.id)).map((terminal) => terminal.id))}>反选</button><button onClick={() => setSelected([])}>清空</button></div>}</div>
+
+          {visibleTerminals.length === 0 && <div className="terminal-empty"><span>⌕</span><h3>未找到匹配终端</h3><p>请调整搜索关键词、分区或状态筛选。</p><button className="text-button" onClick={() => { setQuery(""); setStatusFilter("全部状态"); setSelectedZone("全部终端"); setShowOffline(true); }}>清除筛选</button></div>}
+
+          {view === "cards" && visibleTerminals.length > 0 && <div className="terminal-grid">{visibleTerminals.map((terminal) => {
+            const isSelected = selected.includes(terminal.id);
+            return <article className={`terminal-card ${isSelected ? "selected" : ""} ${terminal.status === "离线" ? "is-offline" : ""}`} key={terminal.id}>
+              {multiSelect && <label className="terminal-check"><input type="checkbox" checked={isSelected} onChange={() => toggleTerminal(terminal.id)} aria-label={`选择 ${terminal.name}`} /><i>✓</i></label>}
+              <div className="terminal-card-head"><span className={`terminal-device-icon ${terminal.type === "SIP 网关" ? "gateway" : ""}`}>{terminal.type === "SIP 网关" ? "GW" : "◖"}</span><div><b>{terminal.name}</b><small>{terminal.id}</small></div><Status tone={terminal.status === "在线空闲" || terminal.status === "播放中" ? "success" : terminal.status === "异常" ? "danger" : "neutral"}>{terminal.status}</Status></div>
+              <div className="terminal-card-body"><div><span>所属分区</span><b>{terminal.zone} · {terminal.location}</b></div><div><span>SIP 分机号</span><b className="mono">{terminal.extension}</b></div><div><span>IP 地址</span><b className="mono">{terminal.ip}</b></div><div><span>终端能力</span><b>{terminal.capability}</b></div></div>
+              <div className="terminal-card-foot"><span>最近通信：{terminal.last}</span><div><button onClick={() => runAction("单点广播", terminal)} disabled={terminal.status === "离线"}>◉<em>广播</em></button><button onClick={() => runAction("监听", terminal)} disabled={terminal.status === "离线"}>◒<em>监听</em></button><button onClick={() => setActiveTerminal(terminal)}>···<em>详情</em></button></div></div>
+            </article>;
+          })}</div>}
+
+          {view === "table" && visibleTerminals.length > 0 && <section className="panel terminal-table-panel"><div className="table-scroll"><table className="data-table terminal-table"><thead><tr>{multiSelect && <th>选择</th>}<th>终端名称</th><th>分机号</th><th>所属分区</th><th>IP 地址</th><th>状态</th><th>最近通信</th><th>操作</th></tr></thead><tbody>{visibleTerminals.map((terminal) => <tr key={terminal.id}>{multiSelect && <td><input type="checkbox" checked={selected.includes(terminal.id)} onChange={() => toggleTerminal(terminal.id)} aria-label={`选择 ${terminal.name}`} /></td>}<td><b>{terminal.name}</b><small>{terminal.id} · {terminal.type}</small></td><td className="mono">{terminal.extension}</td><td>{terminal.zone}<small>{terminal.location}</small></td><td className="mono">{terminal.ip}</td><td><Status tone={terminal.status === "在线空闲" || terminal.status === "播放中" ? "success" : terminal.status === "异常" ? "danger" : "neutral"}>{terminal.status}</Status></td><td>{terminal.last}</td><td><button className="link-action" onClick={() => runAction("单点广播", terminal)} disabled={terminal.status === "离线"}>广播</button><button className="link-action" onClick={() => setActiveTerminal(terminal)}>详情</button></td></tr>)}</tbody></table></div></section>}
+
+          {visibleTerminals.length > 0 && <div className="terminal-pagination"><span>第 1 页，共 {visibleTerminals.length} 条</span><div><button disabled>‹</button><button className="active">1</button><button disabled>›</button></div></div>}
+        </section>
+      </div>
+
+      {activeTerminal && <div className="modal-backdrop" onMouseDown={() => setActiveTerminal(null)}><div className="modal terminal-detail-modal" role="dialog" aria-modal="true" aria-labelledby="terminal-detail-title" onMouseDown={(event) => event.stopPropagation()}><button className="modal-close" onClick={() => setActiveTerminal(null)}>×</button><div className="terminal-detail-heading"><span className={`terminal-device-icon ${activeTerminal.type === "SIP 网关" ? "gateway" : ""}`}>{activeTerminal.type === "SIP 网关" ? "GW" : "◖"}</span><div><span className="section-kicker">终端详情</span><h2 id="terminal-detail-title">{activeTerminal.name}</h2><p>{activeTerminal.id} · {activeTerminal.type}</p></div></div><div className="terminal-detail-grid"><div><span>运行状态</span><Status tone={activeTerminal.status === "在线空闲" || activeTerminal.status === "播放中" ? "success" : activeTerminal.status === "异常" ? "danger" : "neutral"}>{activeTerminal.status}</Status></div><div><span>SIP 分机号</span><b>{activeTerminal.extension}</b></div><div><span>所属分区</span><b>{activeTerminal.zone}</b></div><div><span>安装位置</span><b>{activeTerminal.location}</b></div><div><span>IP 地址</span><b>{activeTerminal.ip}</b></div><div><span>终端能力</span><b>{activeTerminal.capability}</b></div><div><span>最近通信</span><b>{activeTerminal.last}</b></div><div><span>配置状态</span><b>已同步</b></div></div><div className="modal-actions"><button className="button button-secondary" onClick={() => { runAction("监听", activeTerminal); setActiveTerminal(null); }}>◒ 发起监听</button><button className="button button-primary" disabled={activeTerminal.status === "离线"} onClick={() => { runAction("单点广播", activeTerminal); setActiveTerminal(null); }}>◉ 单点广播</button></div></div></div>}
+    </div>
+  );
+}
+
 function Resources({ role }: { role: Role }) {
   const [filter, setFilter] = useState("全部状态");
   const visibleDevices = useMemo(() => filter === "全部状态" ? deviceRows : deviceRows.filter((row) => row.status.includes(filter.replace("设备", ""))), [filter]);
@@ -379,10 +498,11 @@ export default function Home() {
 
         {page === "overview" && <Overview go={go} onEmergency={() => setEmergencyOpen(true)} />}
         {page === "realtime" && <Realtime onStarted={() => { notify("广播任务已创建，正在向 126 台在线设备下发"); go("tasks"); }} />}
+        {page === "terminals" && <Terminals notify={notify} />}
         {page === "resources" && <Resources role={role} />}
         {page === "tasks" && <Tasks />}
         {page === "permissions" && <Permissions role={role} />}
-        {!(["overview", "realtime", "resources", "tasks", "permissions"] as PageKey[]).includes(page) && <PlaceholderPage page={page} />}
+        {!(["overview", "realtime", "terminals", "resources", "tasks", "permissions"] as PageKey[]).includes(page) && <PlaceholderPage page={page} />}
       </section>
 
       {emergencyOpen && <div className="modal-backdrop" onMouseDown={() => setEmergencyOpen(false)}><div className="modal emergency-modal" onMouseDown={(e) => e.stopPropagation()}><button className="modal-close" onClick={() => setEmergencyOpen(false)}>×</button><div className="emergency-symbol">⚡</div><h2>选择应急预案</h2><p>应急广播具有最高执行优先级，触发前请确认事件和目标范围。</p><div className="emergency-options"><button onClick={() => { setEmergencyOpen(false); notify("已进入火灾疏散广播确认流程"); }}><span>P0</span><div><b>火灾疏散广播</b><small>全区 · 强制音量 90% · 循环播放</small></div><em>›</em></button><button><span>P0</span><div><b>极端天气预警</b><small>室外公共区 · 强制音量 85%</small></div><em>›</em></button><button><span className="p1">P1</span><div><b>人员寻呼协助</b><small>自选分区 · 需二次确认</small></div><em>›</em></button></div><button className="text-button modal-library" onClick={() => { setEmergencyOpen(false); go("emergency"); }}>进入完整预案库 →</button></div></div>}
