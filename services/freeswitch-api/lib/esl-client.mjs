@@ -124,6 +124,9 @@ export class EslClient {
         jobUuid: response.headers["job-uuid"] ?? replyText.match(/Job-UUID:\s*([^\s]+)/i)?.[1] ?? null,
         replyText,
       };
+    } catch (error) {
+      error.status ??= 502;
+      throw error;
     } finally {
       socket.end();
     }

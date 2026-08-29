@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 type PageKey =
   | "overview"
@@ -15,6 +15,26 @@ type PageKey =
   | "system";
 
 type Role = "系统管理员" | "广播操作员";
+
+type MediaItem = { id: string; name: string; duration: string; category: string };
+type BroadcastTarget = { extension: string; status: "queued" | "accepted" | "failed" | "cancelled"; error: string | null };
+type BroadcastTask = {
+  id: string;
+  name: string;
+  type: "realtime";
+  status: "dispatching" | "accepted" | "partial" | "failed" | "cancelled";
+  media: MediaItem;
+  createdAt: string;
+  updatedAt: string;
+  targets: BroadcastTarget[];
+};
+
+async function controlApi<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(`/api/control/${path}`, { ...init, headers: { "content-type": "application/json", ...init?.headers } });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.message ?? payload.error ?? "控制服务请求失败");
+  return payload;
+}
 
 const navGroups: Array<{ label: string; items: Array<{ key: PageKey; label: string; icon: string; badge?: string }> }> = [
   { label: "工作台", items: [{ key: "overview", label: "运行总览", icon: "⌂" }] },
@@ -241,23 +261,49 @@ function Overview({ go }: { go: (page: PageKey) => void }) {
   );
 }
 
-function Realtime({ onStarted, organizationName }: { onStarted: (deviceCount: number) => void; organizationName: string }) {
+function Realtime({ onStarted, organizationName }: { onStarted: (task: BroadcastTask) => void; organizationName: string }) {
   const [targetMode, setTargetMode] = useState<"zones" | "terminals">("zones");
   const [selectedZones, setSelectedZones] = useState(["教学楼", "行政办公区"]);
   const [selectedTerminals, setSelectedTerminals] = useState<string[]>([]);
   const [source, setSource] = useState("audio");
   const [confirm, setConfirm] = useState(false);
   const [search, setSearch] = useState("");
+  const [media, setMedia] = useState<MediaItem[]>([]);
+  const [selectedMediaId, setSelectedMediaId] = useState("safety-tone");
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState("");
+
+  useEffect(() => {
+    controlApi<{ items: MediaItem[] }>("media").then(({ items }) => setMedia(items)).catch((error) => setSubmitError(`媒体目录加载失败：${error.message}`));
+  }, []);
 
   const toggleZone = (name: string) => setSelectedZones((current) => current.includes(name) ? current.filter((item) => item !== name) : [...current, name]);
   const toggleTerminal = (id: string) => setSelectedTerminals((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
   const selectedTerminalRows = terminalRows.filter((terminal) => selectedTerminals.includes(terminal.id));
-  const selectedDevices = targetMode === "zones" ? zones.filter((zone) => selectedZones.includes(zone.name)).reduce((sum, zone) => sum + zone.device, 0) : selectedTerminalRows.length;
-  const onlineDevices = targetMode === "zones" ? zones.filter((zone) => selectedZones.includes(zone.name)).reduce((sum, zone) => sum + zone.online, 0) : selectedTerminalRows.filter((terminal) => terminal.status !== "离线" && terminal.status !== "异常").length;
+  const dispatchTargets = (targetMode === "zones" ? terminalRows.filter((terminal) => selectedZones.includes(terminal.zone)) : selectedTerminalRows).filter((terminal) => terminal.status !== "离线" && terminal.status !== "异常");
+  const selectedDevices = targetMode === "zones" ? terminalRows.filter((terminal) => selectedZones.includes(terminal.zone)).length : selectedTerminalRows.length;
+  const onlineDevices = dispatchTargets.length;
   const selectedTargetCount = targetMode === "zones" ? selectedZones.length : selectedTerminals.length;
   const visibleTargetTerminals = terminalRows.filter((terminal) => [terminal.name, terminal.id, terminal.extension, terminal.zone].some((value) => value.toLowerCase().includes(search.trim().toLowerCase())));
   const targetLabel = targetMode === "zones" ? selectedZones.join("、") : selectedTerminalRows.map((terminal) => terminal.name).join("、");
   const selectAllTargets = () => targetMode === "zones" ? setSelectedZones(zones.filter((zone) => zone.name.includes(search)).map((zone) => zone.name)) : setSelectedTerminals(visibleTargetTerminals.map((terminal) => terminal.id));
+  const selectedMedia = media.find((item) => item.id === selectedMediaId) ?? { id: "safety-tone", name: "校园安全提示音", duration: "4 秒", category: "安全提示" };
+  const startBroadcast = async () => {
+    setSubmitting(true);
+    setSubmitError("");
+    try {
+      const { task } = await controlApi<{ task: BroadcastTask }>("broadcasts", {
+        method: "POST",
+        body: JSON.stringify({ name: `${selectedMedia.name} · 实时广播`, mediaId: selectedMedia.id, callerId: "9999", targets: dispatchTargets.map((terminal) => terminal.extension) }),
+      });
+      setConfirm(false);
+      onStarted(task);
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : "广播任务创建失败");
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   return (
     <div className="page realtime-page">
@@ -270,7 +316,7 @@ function Realtime({ onStarted, organizationName }: { onStarted: (deviceCount: nu
       <div className="steps" aria-label="广播配置步骤">
         <div className="step active"><span>1</span><div><b>选择目标</b><small>{targetMode === "zones" ? `${selectedZones.length} 个分区` : `${selectedTerminals.length} 台终端`}</small></div></div>
         <i />
-        <div className="step active"><span>2</span><div><b>选择音源</b><small>校园安全提示音</small></div></div>
+        <div className="step active"><span>2</span><div><b>选择音源</b><small>{selectedMedia.name}</small></div></div>
         <i />
         <div className="step"><span>3</span><div><b>执行策略</b><small>音量与播放方式</small></div></div>
       </div>
@@ -316,9 +362,7 @@ function Realtime({ onStarted, organizationName }: { onStarted: (deviceCount: nu
           {source === "audio" && <>
             <label className="search-field"><span>⌕</span><input placeholder="搜索音频名称" /></label>
             <div className="audio-list">
-              <button className="audio-row selected"><span className="play-circle">▶</span><span><b>校园安全提示音.mp3</b><small>00:28 · 安全提示</small></span><em>已选择</em></button>
-              <button className="audio-row"><span className="play-circle">▶</span><span><b>午间校园音乐.mp3</b><small>05:58 · 日常音乐</small></span></button>
-              <button className="audio-row"><span className="play-circle">▶</span><span><b>临时通知前奏.wav</b><small>00:06 · 提示音</small></span></button>
+              {(media.length ? media : [selectedMedia]).map((item) => <button key={item.id} className={selectedMediaId === item.id ? "audio-row selected" : "audio-row"} onClick={() => setSelectedMediaId(item.id)}><span className="play-circle">▶</span><span><b>{item.name}</b><small>{item.duration} · {item.category}</small></span>{selectedMediaId === item.id && <em>已选择</em>}</button>)}
             </div>
           </>}
           {source === "template" && <div className="template-list"><button className="template-card selected"><b>校园安全提醒</b><span>安全提示音 · 全文 28 秒</span></button><button className="template-card"><b>失物招领通知</b><span>前奏 + TTS 动态文本</span></button><button className="template-card"><b>临时闭馆通知</b><span>提示音 + 闭馆文案</span></button></div>}
@@ -328,7 +372,7 @@ function Realtime({ onStarted, organizationName }: { onStarted: (deviceCount: nu
           <div className="builder-title"><div><span>03</span><h2>执行策略</h2></div></div>
           <div className="form-label"><span>播放音量</span><div className="range-line"><input type="range" min="0" max="100" defaultValue="75" /><b>75%</b></div></div>
           <label className="switch-line"><span><b>循环播放</b><small>内容结束后继续播放</small></span><input type="checkbox" /><i /></label>
-          <button className="button button-primary full-button" disabled={!selectedTargetCount} onClick={() => setConfirm(true)}>开始广播</button>
+          <button className="button button-primary full-button" disabled={!selectedTargetCount || !onlineDevices} onClick={() => { setSubmitError(""); setConfirm(true); }}>开始广播</button>
         </section>
       </div>
 
@@ -338,9 +382,10 @@ function Realtime({ onStarted, organizationName }: { onStarted: (deviceCount: nu
           <div className="confirm-icon">◉</div>
           <h2 id="confirm-title">确认开始实时广播？</h2>
           <p>广播将立即下发至所选{targetMode === "zones" ? "分区" : "终端"}。开始后可在任务中心查看每台设备的执行结果。</p>
-          <div className="confirm-facts"><div><span>广播内容</span><b>校园安全提示音.mp3</b></div><div><span>目标范围</span><b>{targetLabel}</b></div><div><span>预计覆盖</span><b>{onlineDevices} 台可用终端</b></div><div><span>播放音量</span><b>75%</b></div></div>
+          <div className="confirm-facts"><div><span>广播内容</span><b>{selectedMedia.name}</b></div><div><span>目标范围</span><b>{targetLabel}</b></div><div><span>预计下发</span><b>{onlineDevices} 台可用终端</b></div><div><span>播放音量</span><b>75%</b></div></div>
           <div className="risk-note">广播会立即发送，请确认目标范围和音频内容无误。</div>
-          <div className="modal-actions"><button className="button button-secondary" onClick={() => setConfirm(false)}>取消</button><button className="button button-primary" onClick={() => { setConfirm(false); onStarted(onlineDevices); }}>确认并开始</button></div>
+          {submitError && <div className="risk-note">{submitError}</div>}
+          <div className="modal-actions"><button className="button button-secondary" disabled={submitting} onClick={() => setConfirm(false)}>取消</button><button className="button button-primary" disabled={submitting} onClick={startBroadcast}>{submitting ? "正在下发…" : "确认并开始"}</button></div>
         </div>
       </div>}
     </div>
@@ -683,11 +728,48 @@ function Resources({ role, organizationName, onOrganizationSave, notify }: { rol
   </div>;
 }
 
+const taskStatusLabel: Record<BroadcastTask["status"], string> = {
+  dispatching: "下发中",
+  accepted: "已接受",
+  partial: "部分接受",
+  failed: "下发失败",
+  cancelled: "已取消",
+};
+
 function Tasks() {
   const [tab, setTab] = useState("全部任务");
+  const [liveTasks, setLiveTasks] = useState<BroadcastTask[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    const load = () => controlApi<{ items: BroadcastTask[] }>("broadcasts?limit=50")
+      .then(({ items }) => { if (active) { setLiveTasks(items); setError(""); } })
+      .catch((requestError) => { if (active) setError(requestError.message); })
+      .finally(() => { if (active) setLoading(false); });
+    load();
+    const timer = window.setInterval(load, 5000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, []);
+
+  const cancelTask = async (id: string) => {
+    try {
+      const { task } = await controlApi<{ task: BroadcastTask }>(`broadcasts/${encodeURIComponent(id)}/cancel`, { method: "POST", body: "{}" });
+      setLiveTasks((current) => current.map((item) => item.id === task.id ? task : item));
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "停止任务失败");
+    }
+  };
+
   return <div className="page"><div className="page-heading split-heading"><div><div className="breadcrumb">广播中心 / 任务中心</div><h1>任务中心</h1><p>统一查看广播队列、执行进度、设备级结果和历史记录。</p></div><button className="button button-secondary">导出当前列表</button></div>
     <section className="panel tasks-card"><div className="table-toolbar"><div className="tabs">{["全部任务", "进行中 1", "待执行 6", "异常 2", "已完成"].map((item) => <button key={item} onClick={() => setTab(item)} className={tab === item ? "active" : ""}>{item}</button>)}</div><div className="toolbar-actions"><label className="search-field compact"><span>⌕</span><input placeholder="搜索任务名称或编号" /></label><button className="button button-secondary small-button">筛选</button></div></div>
-    <table className="data-table task-table"><thead><tr><th>任务 / 编号</th><th>类型</th><th>目标范围</th><th>设备结果</th><th>状态</th><th>发起时间</th><th>操作</th></tr></thead><tbody>{taskRows.map((row) => <tr key={row.id}><td><b>{row.name}</b><small>{row.id}</small></td><td>{row.type}</td><td>{row.target}</td><td><div className="result-progress"><span><i style={{ width: `${parseInt(row.progress) / parseInt(row.progress.split("/")[1]) * 100}%` }} /></span><b>{row.progress}</b></div></td><td><Status tone={row.status === "播放中" || row.status === "成功" ? "success" : "warning"}>{row.status}</Status></td><td>08-10 {row.time}</td><td><button className="link-action">详情</button></td></tr>)}</tbody></table></section>
+    {error && <div className="risk-note">控制服务暂不可用：{error}</div>}
+    <table className="data-table task-table"><thead><tr><th>任务 / 编号</th><th>类型</th><th>目标范围</th><th>设备结果</th><th>状态</th><th>发起时间</th><th>操作</th></tr></thead><tbody>
+      {liveTasks.map((task) => { const accepted = task.targets.filter((target) => target.status === "accepted").length; return <tr key={task.id}><td><b>{task.name}</b><small>{task.id}</small></td><td>实时广播</td><td>{task.targets.map((target) => target.extension).join("、")}</td><td><div className="result-progress"><span><i style={{ width: `${task.targets.length ? accepted / task.targets.length * 100 : 0}%` }} /></span><b>{accepted} / {task.targets.length} 已接受</b></div></td><td><Status tone={task.status === "accepted" ? "success" : task.status === "failed" ? "danger" : "warning"}>{taskStatusLabel[task.status]}</Status></td><td>{new Date(task.createdAt).toLocaleString("zh-CN", { hour12: false })}</td><td>{!["cancelled", "failed"].includes(task.status) ? <button className="link-action" onClick={() => cancelTask(task.id)}>停止</button> : <button className="link-action" disabled>详情</button>}</td></tr>; })}
+      {!liveTasks.length && !loading && taskRows.map((row) => <tr key={row.id}><td><b>{row.name}</b><small>{row.id} · 原型示例</small></td><td>{row.type}</td><td>{row.target}</td><td><div className="result-progress"><span><i style={{ width: `${parseInt(row.progress) / parseInt(row.progress.split("/")[1]) * 100}%` }} /></span><b>{row.progress}</b></div></td><td><Status tone={row.status === "播放中" || row.status === "成功" ? "success" : "warning"}>{row.status}</Status></td><td>08-10 {row.time}</td><td><button className="link-action">详情</button></td></tr>)}
+      {loading && <tr><td colSpan={7}>正在读取实时任务…</td></tr>}
+    </tbody></table></section>
     <div className="task-insight-grid"><section className="panel"><span className="section-kicker">执行质量</span><h2>今日任务结果</h2><div className="donut-row"><div className="donut"><span>98.4%<small>成功率</small></span></div><div className="legend-list"><div><i className="green-bg" />成功确认<b>3,426</b></div><div><i className="orange-bg" />推定完成<b>41</b></div><div><i className="red-bg" />失败 / 未知<b>16</b></div></div></div></section><section className="panel"><span className="section-kicker">失败原因</span><h2>需要关注的问题</h2><div className="reason-bars"><div><span>终端离线</span><i><b style={{ width: "78%" }} /></i><em>8</em></div><div><span>媒体不可达</span><i><b style={{ width: "48%" }} /></i><em>5</em></div><div><span>能力不兼容</span><i><b style={{ width: "28%" }} /></i><em>3</em></div></div></section></div>
   </div>;
 }
@@ -768,7 +850,7 @@ export default function Home() {
         </header>
 
         {page === "overview" && <Overview go={go} />}
-        {page === "realtime" && <Realtime organizationName={organizationName} onStarted={(deviceCount) => { notify(`广播任务已创建，正在向 ${deviceCount} 台可用终端下发`); go("tasks"); }} />}
+        {page === "realtime" && <Realtime organizationName={organizationName} onStarted={(task) => { const accepted = task.targets.filter((target) => target.status === "accepted").length; notify(`广播任务 ${task.id} 已创建，FreeSWITCH 已接受 ${accepted}/${task.targets.length} 个目标`); go("tasks"); }} />}
         {page === "schedule" && <Schedule notify={notify} />}
         {page === "terminals" && <Terminals notify={notify} />}
         {page === "resources" && <Resources role={role} organizationName={organizationName} onOrganizationSave={setOrganizationName} notify={notify} />}

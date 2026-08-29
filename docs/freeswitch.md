@@ -102,7 +102,29 @@ GET /api/v1/registrations
 
 ### 发起广播
 
-先将音频复制到 FreeSWITCH 的持久化目录：
+查询可直接使用的内置音源（由 FreeSWITCH 生成，无需外部文件或 Token）：
+
+```http
+GET /api/v1/media
+X-API-Key: <FREESWITCH_API_KEY>
+```
+
+创建并持久化广播任务：
+
+```http
+POST /api/v1/broadcasts
+Content-Type: application/json
+X-API-Key: <FREESWITCH_API_KEY>
+
+{
+  "name": "线路联调",
+  "targets": ["1000", "1001"],
+  "mediaId": "test-tone",
+  "callerId": "9999"
+}
+```
+
+也可以先将自有音频复制到 FreeSWITCH 的持久化目录：
 
 ```bash
 docker compose cp ./notice.wav freeswitch:/var/lib/freeswitch/storage/notice.wav
@@ -116,13 +138,25 @@ Content-Type: application/json
 X-API-Key: <FREESWITCH_API_KEY>
 
 {
+  "name": "通知广播",
   "targets": ["1000", "1001"],
   "audio": "/var/lib/freeswitch/storage/notice.wav",
   "callerId": "9999"
 }
 ```
 
-成功后返回 HTTP `202`，其中包含每个目标的后台任务 UUID 和通道 UUID。
+成功后返回 HTTP `202`，任务中包含每个目标的下发状态、后台任务 UUID 和通道 UUID。`accepted` 表示 FreeSWITCH 已接受调度命令，不等同于 SIP 终端已经接听或完成播放。
+
+### 查询与取消广播任务
+
+```http
+GET /api/v1/broadcasts?limit=50
+GET /api/v1/broadcasts/{taskId}
+POST /api/v1/broadcasts/{taskId}/cancel
+X-API-Key: <FREESWITCH_API_KEY>
+```
+
+任务记录保存在 `freeswitch-api-data` Docker 卷，API 容器重启后仍会保留。
 
 ### 挂断通道
 
@@ -145,5 +179,5 @@ X-API-Key: <FREESWITCH_API_KEY>
 1. 业务数据库到 FreeSWITCH Directory 的动态账号配置；
 2. ESL 事件长连接，将 `CHANNEL_ANSWER`、`CHANNEL_HANGUP` 和 `BACKGROUND_JOB` 写入任务状态；
 3. 媒体文件上传、转码与内容审核；
-4. 分区并发调度、失败重试和任务取消；
+4. 分区并发调度和失败重试；
 5. SIP TLS、RTP 安全策略、访问控制和生产监控。

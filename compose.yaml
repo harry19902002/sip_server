@@ -64,6 +64,9 @@ services:
       ESL_PASSWORD: ${ESL_PASSWORD:?Set ESL_PASSWORD in .env}
       FREESWITCH_DOMAIN: ${FREESWITCH_DOMAIN:-sip.local}
       ESL_TIMEOUT_MS: ${ESL_TIMEOUT_MS:-5000}
+      TASK_STORE_PATH: /data/broadcast-tasks.json
+    volumes:
+      - freeswitch-api-data:/data
     depends_on:
       freeswitch:
         condition: service_healthy
@@ -90,3 +93,4 @@ volumes:
   freeswitch-recordings:
   freeswitch-storage:
   freeswitch-db:
+  freeswitch-api-data:
