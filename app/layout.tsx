@@ -6,7 +6,7 @@ const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "声域 · SIP 广播管理系统",
+  title: "SIP广播系统 · 管理平台",
   description: "面向园区、校园与公共空间的 SIP 广播运营管理平台。",
   icons: { icon: "/favicon.svg", shortcut: "/favicon.svg" },
 };
