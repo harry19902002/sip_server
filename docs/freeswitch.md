@@ -10,18 +10,23 @@ FreeSWITCH 负责 SIP 注册、呼叫控制、媒体播放和会议能力。`fre
 
 - SIP `5060/tcp+udp` 和 RTP `16384-16484/udp` 发布给终端；
 - ESL `8021/tcp` 只存在于 Compose 内部网络，不发布到宿主机；
+- ESL ACL 只允许容器内回环地址和固定的 API 容器地址 `172.30.0.3`；
 - REST API 默认只绑定宿主机 `127.0.0.1:3001`；
-- ESL 密码、API Key、SIP 密码和 SignalWire Token 都由环境变量注入，不提交仓库；
+- ESL 密码、API Key 和 SIP 密码都由环境变量注入，不提交仓库；
 - API 不提供任意 FreeSWITCH 命令透传，仅暴露经过校验的业务操作。
 
 ## 前置条件
 
 1. 启动 Docker Desktop，并使用 Linux containers。
-2. 在 SignalWire 创建 Personal Access Token。官方 FreeSWITCH Debian 软件源构建镜像时需要它。
-3. 将 `.env.example` 复制为 `.env`，替换其中的全部密码和 Token。
-4. 对于局域网 SIP 终端，将 `FREESWITCH_EXTERNAL_IP` 设置为运行 Docker 的主机局域网 IP。
+2. 将 `.env.example` 复制为 `.env`，替换其中的全部密码。
+3. 对于局域网 SIP 终端，将 `FREESWITCH_EXTERNAL_IP` 设置为运行 Docker 的主机局域网 IP。
 
 建议为三个密码分别生成至少 32 字节随机值，禁止共用。
+
+镜像从 FreeSWITCH 官方 GitHub 仓库的 `v1.11.1` 标签进行多阶段源码构建，
+并从公开仓库构建兼容的 SpanDSP `v3.1.0` 与 Sofia-SIP `v1.13.17`。
+它不使用 SignalWire 软件包仓库，因此不需要 SignalWire Token。首次构建时间较长，
+后续会复用 Docker 构建缓存。
 
 ## 启动
 
@@ -60,6 +65,8 @@ vanilla 配置提供演示分机，可先用 `1000`、`1001` 等分机注册：
 - Password：`.env` 中的 `SIP_DEFAULT_PASSWORD`
 
 演示分机只适合联调。生产环境应由业务数据库生成独立账号和强密码，并通过配置服务同步到 FreeSWITCH Directory。
+
+当前仅启用普通 SIP `5060/tcp+udp`。SIP TLS 与 WSS 默认关闭；正式启用前应先配置受信任证书、对应端口和证书轮换流程。
 
 ## REST API
 

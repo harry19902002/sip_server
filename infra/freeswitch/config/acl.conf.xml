@@ -1,0 +1,12 @@
+<configuration name="acl.conf" description="SIP Server Network Lists">
+  <network-lists>
+    <list name="sip-control.esl" default="deny">
+      <node type="allow" cidr="127.0.0.1/32"/>
+      <node type="allow" cidr="172.30.0.3/32"/>
+    </list>
+
+    <list name="domains" default="deny">
+      <node type="allow" domain="$${domain}"/>
+    </list>
+  </network-lists>
+</configuration>

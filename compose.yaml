@@ -5,11 +5,25 @@ services:
     build:
       context: ./infra/freeswitch
       args:
-        FREESWITCH_VERSION: ${FREESWITCH_VERSION:-1.11}
-      secrets:
-        - signalwire_token
-    image: sip-server/freeswitch:${FREESWITCH_VERSION:-1.11}
+        FREESWITCH_REF: ${FREESWITCH_REF:-v1.11.1}
+        SPANDSP_REF: ${SPANDSP_REF:-v3.1.0}
+        SOFIA_SIP_REF: ${SOFIA_SIP_REF:-v1.13.17}
+    image: sip-server/freeswitch:${FREESWITCH_REF:-v1.11.1}
     restart: unless-stopped
+    command:
+      - freeswitch
+      - -conf
+      - /etc/freeswitch
+      - -log
+      - /var/log/freeswitch
+      - -db
+      - /var/lib/freeswitch/db
+      - -u
+      - freeswitch
+      - -g
+      - freeswitch
+      - -nonat
+      - -nf
     environment:
       ESL_PASSWORD: ${ESL_PASSWORD:?Set ESL_PASSWORD in .env}
       FREESWITCH_DOMAIN: ${FREESWITCH_DOMAIN:-sip.local}
@@ -17,15 +31,19 @@ services:
       SIP_DEFAULT_PASSWORD: ${SIP_DEFAULT_PASSWORD:?Set SIP_DEFAULT_PASSWORD in .env}
     volumes:
       - ./infra/freeswitch/config/event_socket.conf.xml.template:/opt/sip-server/event_socket.conf.xml.template:ro
+      - ./infra/freeswitch/config/acl.conf.xml:/etc/freeswitch/autoload_configs/acl.conf.xml:ro
+      - ./infra/freeswitch/config/modules.conf.xml:/etc/freeswitch/autoload_configs/modules.conf.xml:ro
       - ./infra/freeswitch/config/switch.conf.xml:/etc/freeswitch/autoload_configs/switch.conf.xml:ro
       - freeswitch-recordings:/var/lib/freeswitch/recordings
       - freeswitch-storage:/var/lib/freeswitch/storage
+      - freeswitch-db:/var/lib/freeswitch/db
     ports:
       - "${SIP_PORT:-5060}:5060/tcp"
       - "${SIP_PORT:-5060}:5060/udp"
       - "${RTP_PORT_START:-16384}-${RTP_PORT_END:-16484}:16384-16484/udp"
     networks:
-      - sip-control
+      sip-control:
+        ipv4_address: 172.30.0.2
     healthcheck:
       test: ["CMD-SHELL", "fs_cli -H 127.0.0.1 -P 8021 -p \"$$ESL_PASSWORD\" -x status | grep -q '^UP'"]
       interval: 15s
@@ -52,7 +70,8 @@ services:
     ports:
       - "127.0.0.1:${FREESWITCH_API_PORT:-3001}:3001"
     networks:
-      - sip-control
+      sip-control:
+        ipv4_address: 172.30.0.3
     healthcheck:
       test: ["CMD", "node", "healthcheck.mjs"]
       interval: 15s
@@ -63,11 +82,11 @@ networks:
   sip-control:
     driver: bridge
     internal: false
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
 
 volumes:
   freeswitch-recordings:
   freeswitch-storage:
-
-secrets:
-  signalwire_token:
-    environment: SIGNALWIRE_TOKEN
+  freeswitch-db:

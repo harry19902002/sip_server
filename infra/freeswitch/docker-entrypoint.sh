@@ -24,9 +24,16 @@ sed -i \
   -e "s|data=\"external_sip_ip=.*\"|data=\"external_sip_ip=$(escape_sed "$FREESWITCH_EXTERNAL_IP")\"|" \
   "$vars_file"
 
+# The vanilla internal profile enables WSS even when SIP TLS is disabled. WSS
+# requires a separately managed certificate, so keep it off for this SIP-only
+# deployment until certificate provisioning is added.
+sed -i '/<param name="wss-binding" value=":7443"\/>/d' \
+  /etc/freeswitch/sip_profiles/internal.xml
+
 install -d -o freeswitch -g freeswitch \
   /var/lib/freeswitch/recordings \
   /var/lib/freeswitch/storage \
+  /var/lib/freeswitch/db \
   /var/log/freeswitch \
   /run/freeswitch
 
