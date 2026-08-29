@@ -16,6 +16,8 @@
 - TypeScript
 - vinext / Vite
 - Cloudflare Workers（可选 D1 与 Drizzle）
+- FreeSWITCH 1.11、Event Socket Library（ESL）
+- Node.js FreeSWITCH REST API
 
 ## 本地运行
 
@@ -34,6 +36,19 @@ npm test
 npm run lint
 ```
 
+## FreeSWITCH SIP 调度
+
+工程已内置 FreeSWITCH 容器化部署和独立 REST API。浏览器管理端不直接访问
+FreeSWITCH；API 服务通过容器内部的 ESL 控制 FreeSWITCH，ESL 端口不会发布到宿主机。
+
+```text
+Web 管理端 → REST API (:3001) → ESL (:8021，仅容器网络) → FreeSWITCH
+                                                        ├─ SIP :5060
+                                                        └─ RTP :16384-16484/UDP
+```
+
+部署、安全配置和 API 示例见 [docs/freeswitch.md](docs/freeswitch.md)。
+
 ## 工程结构
 
 ```text
@@ -43,6 +58,8 @@ drizzle/      数据库迁移元数据
 public/       静态资源
 tests/        渲染测试
 worker/       Cloudflare Worker 入口
+infra/        FreeSWITCH 镜像及配置
+services/     FreeSWITCH REST API
 ```
 
 ## 说明

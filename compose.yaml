@@ -1,0 +1,73 @@
+name: sip-broadcast-system
+
+services:
+  freeswitch:
+    build:
+      context: ./infra/freeswitch
+      args:
+        FREESWITCH_VERSION: ${FREESWITCH_VERSION:-1.11}
+      secrets:
+        - signalwire_token
+    image: sip-server/freeswitch:${FREESWITCH_VERSION:-1.11}
+    restart: unless-stopped
+    environment:
+      ESL_PASSWORD: ${ESL_PASSWORD:?Set ESL_PASSWORD in .env}
+      FREESWITCH_DOMAIN: ${FREESWITCH_DOMAIN:-sip.local}
+      FREESWITCH_EXTERNAL_IP: ${FREESWITCH_EXTERNAL_IP:-auto-nat}
+      SIP_DEFAULT_PASSWORD: ${SIP_DEFAULT_PASSWORD:?Set SIP_DEFAULT_PASSWORD in .env}
+    volumes:
+      - ./infra/freeswitch/config/event_socket.conf.xml.template:/opt/sip-server/event_socket.conf.xml.template:ro
+      - ./infra/freeswitch/config/switch.conf.xml:/etc/freeswitch/autoload_configs/switch.conf.xml:ro
+      - freeswitch-recordings:/var/lib/freeswitch/recordings
+      - freeswitch-storage:/var/lib/freeswitch/storage
+    ports:
+      - "${SIP_PORT:-5060}:5060/tcp"
+      - "${SIP_PORT:-5060}:5060/udp"
+      - "${RTP_PORT_START:-16384}-${RTP_PORT_END:-16484}:16384-16484/udp"
+    networks:
+      - sip-control
+    healthcheck:
+      test: ["CMD-SHELL", "fs_cli -H 127.0.0.1 -P 8021 -p \"$$ESL_PASSWORD\" -x status | grep -q '^UP'"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  freeswitch-api:
+    build:
+      context: ./services/freeswitch-api
+    image: sip-server/freeswitch-api:local
+    restart: unless-stopped
+    environment:
+      PORT: 3001
+      API_KEY: ${FREESWITCH_API_KEY:?Set FREESWITCH_API_KEY in .env}
+      ESL_HOST: freeswitch
+      ESL_PORT: 8021
+      ESL_PASSWORD: ${ESL_PASSWORD:?Set ESL_PASSWORD in .env}
+      FREESWITCH_DOMAIN: ${FREESWITCH_DOMAIN:-sip.local}
+      ESL_TIMEOUT_MS: ${ESL_TIMEOUT_MS:-5000}
+    depends_on:
+      freeswitch:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${FREESWITCH_API_PORT:-3001}:3001"
+    networks:
+      - sip-control
+    healthcheck:
+      test: ["CMD", "node", "healthcheck.mjs"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+networks:
+  sip-control:
+    driver: bridge
+    internal: false
+
+volumes:
+  freeswitch-recordings:
+  freeswitch-storage:
+
+secrets:
+  signalwire_token:
+    environment: SIGNALWIRE_TOKEN

@@ -11,7 +11,13 @@
     "start": "vinext start",
     "test": "npm run build && node --test tests/rendered-html.test.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
-    "db:generate": "drizzle-kit generate"
+    "db:generate": "drizzle-kit generate",
+    "freeswitch:config": "docker compose config",
+    "freeswitch:build": "docker compose build",
+    "freeswitch:up": "docker compose up -d",
+    "freeswitch:down": "docker compose down",
+    "freeswitch:logs": "docker compose logs -f freeswitch freeswitch-api",
+    "freeswitch:api:test": "node --test services/freeswitch-api/test/*.test.mjs"
   },
   "dependencies": {
     "drizzle-orm": "0.45.2",
