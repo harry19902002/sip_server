@@ -31,10 +31,7 @@ test("server-renders the SIP broadcast management platform", async () => {
   const html = await response.text();
   assert.match(html, /<html lang="zh-CN">/i);
   assert.match(html, /<title>SIP广播系统 · 管理平台<\/title>/i);
-  assert.match(html, /运行总览/);
-  assert.match(html, /实时广播/);
-  assert.match(html, /终端列表/);
-  assert.match(html, /SIP 账号管理/);
+  assert.match(html, /正在验证登录状态/);
   assert.doesNotMatch(html, /Your site is taking shape|Building your site/i);
 });
 
@@ -50,6 +47,9 @@ test("keeps core management surfaces in the application source", async () => {
   assert.match(page, /function Schedule\(/);
   assert.match(page, /function Terminals\(/);
   assert.match(page, /function SipAccounts\(/);
+  assert.match(page, /亮色风格/);
+  assert.match(page, /暗色风格/);
+  assert.match(page, /onThemeChange/);
   assert.match(layout, /title:\s*"SIP广播系统 · 管理平台"/);
   assert.match(packageJson, /"name": "sip-broadcast-system"/);
 });

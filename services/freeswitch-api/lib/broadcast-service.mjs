@@ -1,131 +1,179 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
-
-export const mediaCatalog = [
-  { id: "safety-tone", name: "校园安全提示音", duration: "4 秒", category: "安全提示", playback: "tone_stream://%(350,150,880);loops=8" },
-  { id: "attention-tone", name: "临时通知前奏", duration: "3 秒", category: "提示音", playback: "tone_stream://%(200,100,660,880);loops=10" },
-  { id: "test-tone", name: "SIP 线路测试音", duration: "2 秒", category: "系统测试", playback: "tone_stream://%(200,200,425);loops=5" },
-];
 
 const extensionPattern = /^[0-9]{2,12}$/;
-const audioPathPattern = /^\/(?:usr\/share\/freeswitch\/sounds|var\/lib\/freeswitch\/(?:storage|recordings))\/[a-zA-Z0-9_./-]+\.(?:wav|mp3)$/;
+const fileAudioPattern = /^\/(?:usr\/share\/freeswitch\/sounds|var\/lib\/freeswitch\/(?:storage|recordings))\/[a-zA-Z0-9_./-]+\.(?:wav|mp3)$/;
+const toneAudioPattern = /^tone_stream:\/\/%\([0-9]{1,5},[0-9]{1,5},[0-9]{2,5}\)$/;
+const terminalTargetStates = new Set(["SUCCEEDED", "FAILED", "CANCELED"]);
 
-function requestError(message, status = 400) {
+function problem(message, status = 400) {
   return Object.assign(new Error(message), { status });
 }
 
-function publicMedia(media) {
-  return { id: media.id, name: media.name, duration: media.duration, category: media.category };
+function approvedAudio(audio) {
+  if (fileAudioPattern.test(audio) || toneAudioPattern.test(audio)) return true;
+  if (!audio.startsWith("file_string://")) return false;
+  const files = audio.slice("file_string://".length).split("!");
+  return files.length > 0 && files.length <= 100 && files.every((file) => fileAudioPattern.test(file));
+}
+
+function aggregate(broadcast) {
+  if (broadcast.state === "CANCELED" || broadcast.state === "CANCELED_REQUESTED") return;
+  const states = broadcast.targets.map((target) => target.state);
+  if (!states.every((state) => terminalTargetStates.has(state))) {
+    broadcast.state = states.some((state) => ["ANSWERED", "PLAYING", "QUEUED"].includes(state)) ? "RUNNING" : broadcast.state;
+    return;
+  }
+  const succeeded = states.filter((state) => state === "SUCCEEDED").length;
+  broadcast.state = succeeded === states.length ? "SUCCEEDED" : succeeded > 0 ? "PARTIAL_FAILED" : states.every((state) => state === "CANCELED") ? "CANCELED" : "FAILED";
+  broadcast.finishedAt = new Date().toISOString();
 }
 
 export class BroadcastService {
-  constructor({ esl, domain = "sip.local", storePath = "" }) {
+  constructor({ store, esl, domain }) {
+    this.store = store;
     this.esl = esl;
     this.domain = domain;
-    this.storePath = storePath;
-    this.tasks = [];
-    this.persistQueue = Promise.resolve();
   }
 
-  async initialize() {
-    if (!this.storePath) return;
-    try {
-      const stored = JSON.parse(await readFile(this.storePath, "utf8"));
-      this.tasks = Array.isArray(stored.tasks) ? stored.tasks : [];
-    } catch (error) {
-      if (error.code !== "ENOENT") throw error;
-    }
+  list(filters) {
+    return this.store.list(filters);
   }
 
-  listMedia() {
-    return mediaCatalog.map(publicMedia);
+  get(id) {
+    return this.store.get(id);
   }
 
-  listTasks(limit = 50) {
-    return this.tasks.slice(0, Math.min(Math.max(limit, 1), 200));
-  }
+  async create(input, { idempotencyKey } = {}) {
+    const existing = this.store.getByIdempotencyKey(idempotencyKey);
+    if (existing) return { broadcast: existing, replayed: true };
 
-  getTask(id) {
-    const task = this.tasks.find((item) => item.id === id);
-    if (!task) throw requestError("broadcast task not found", 404);
-    return task;
-  }
-
-  async createTask(input) {
+    const name = String(input.name ?? "实时广播").trim();
     const targets = Array.isArray(input.targets) ? [...new Set(input.targets.map(String))] : [];
+    const audio = String(input.audio ?? "");
     const callerId = String(input.callerId ?? "9999");
-    const media = mediaCatalog.find((item) => item.id === input.mediaId);
-    const rawAudio = String(input.audio ?? "");
+    const volume = Number(input.volume ?? 75);
 
+    if (!name || name.length > 100) throw problem("name must contain 1-100 characters");
     if (!targets.length || targets.length > 500 || targets.some((target) => !extensionPattern.test(target))) {
-      throw requestError("targets must contain 1-500 numeric SIP extensions");
+      throw problem("targets must contain 1-500 numeric SIP extensions");
     }
-    if (!extensionPattern.test(callerId)) throw requestError("callerId must be numeric");
-    if (!media && !audioPathPattern.test(rawAudio)) throw requestError("mediaId must reference an available media item");
+    if (!approvedAudio(audio)) {
+      throw problem("audio must be an approved WAV/MP3 path, media playlist, or a safe tone_stream test URI");
+    }
+    if (!extensionPattern.test(callerId)) throw problem("callerId must be numeric");
+    if (!Number.isInteger(volume) || volume < 0 || volume > 100) throw problem("volume must be an integer from 0 to 100");
 
     const now = new Date().toISOString();
-    const task = {
-      id: `JOB-${now.slice(2, 10).replaceAll("-", "")}-${randomUUID().slice(0, 8).toUpperCase()}`,
-      name: String(input.name ?? "实时广播").trim().slice(0, 80) || "实时广播",
-      type: "realtime",
-      status: "dispatching",
-      media: media ? publicMedia(media) : { id: "uploaded-file", name: rawAudio.split("/").at(-1), category: "媒体文件" },
+    const broadcast = this.store.create({
+      id: randomUUID(),
+      name,
+      type: "REALTIME",
+      state: "DISPATCHING",
+      audio,
       callerId,
+      volume,
+      sourceType: ["PLAYLIST", "MIXED"].includes(input.sourceType) ? input.sourceType : "FILE",
+      sourceId: input.sourceId ? String(input.sourceId) : null,
+      sourceName: input.sourceName ? String(input.sourceName).slice(0, 100) : null,
+      sourceItems: Array.isArray(input.sourceItems) ? input.sourceItems.slice(0, 50) : [],
       createdAt: now,
       updatedAt: now,
-      targets: targets.map((extension) => ({ extension, status: "queued", channelUuid: null, jobUuid: null, error: null })),
-    };
-    this.tasks.unshift(task);
-    await this.persist();
+      startedAt: now,
+      finishedAt: null,
+      targets: targets.map((extension) => ({
+        id: randomUUID(), extension, state: "PENDING", channelUuid: null, jobUuid: null,
+        answeredAt: null, finishedAt: null, failureCause: null,
+      })),
+    }, idempotencyKey);
 
-    for (const target of task.targets) {
-      target.channelUuid = randomUUID();
-      const dialString = `{origination_uuid=${target.channelUuid},origination_caller_id_number=${callerId},ignore_early_media=true}user/${target.extension}@${this.domain}`;
-      try {
-        const result = await this.esl.execute(`originate ${dialString} &playback(${media?.playback ?? rawAudio})`, { background: true });
-        target.jobUuid = result.jobUuid;
-        target.status = "accepted";
-      } catch (error) {
-        target.status = "failed";
-        target.error = error.message;
+    const results = await Promise.allSettled(broadcast.targets.map(async (target) => {
+      const channelUuid = randomUUID();
+      const variables = [
+        `origination_uuid=${channelUuid}`,
+        `origination_caller_id_number=${callerId}`,
+        "ignore_early_media=true",
+        `playback_volume=${Math.round((volume - 50) / 2)}`,
+        `sip_broadcast_id=${broadcast.id}`,
+        `sip_target_id=${target.id}`,
+      ].join(",");
+      const dialString = `{${variables}}user/${target.extension}@${this.domain}`;
+      const result = await this.esl.execute(`originate ${dialString} &playback(${audio})`, { background: true });
+      this.store.updateTarget(broadcast.id, target.id, (storedTarget) => {
+        storedTarget.state = "QUEUED";
+        storedTarget.channelUuid = channelUuid;
+        storedTarget.jobUuid = result.jobUuid;
+      });
+      return target.id;
+    }));
+
+    results.forEach((result, index) => {
+      if (result.status === "rejected") {
+        this.store.updateTarget(broadcast.id, broadcast.targets[index].id, (target) => {
+          target.state = "FAILED";
+          target.failureCause = result.reason?.message ?? "dispatch_failed";
+          target.finishedAt = new Date().toISOString();
+        });
       }
-    }
-
-    const accepted = task.targets.filter((target) => target.status === "accepted").length;
-    task.status = accepted === task.targets.length ? "accepted" : accepted ? "partial" : "failed";
-    task.updatedAt = new Date().toISOString();
-    await this.persist();
-    return task;
-  }
-
-  async cancelTask(id) {
-    const task = this.getTask(id);
-    if (["cancelled", "failed"].includes(task.status)) return task;
-    for (const target of task.targets.filter((item) => item.status === "accepted")) {
-      try {
-        await this.esl.execute(`uuid_kill ${target.channelUuid} NORMAL_CLEARING`);
-      } catch {
-        // The call may already have ended; cancellation remains idempotent.
-      }
-      target.status = "cancelled";
-    }
-    task.status = "cancelled";
-    task.updatedAt = new Date().toISOString();
-    task.cancelledAt = task.updatedAt;
-    await this.persist();
-    return task;
-  }
-
-  async persist() {
-    if (!this.storePath) return;
-    const serialized = JSON.stringify({ version: 1, tasks: this.tasks }, null, 2);
-    this.persistQueue = this.persistQueue.then(async () => {
-      await mkdir(dirname(this.storePath), { recursive: true });
-      const temporaryPath = `${this.storePath}.${process.pid}.tmp`;
-      await writeFile(temporaryPath, serialized, { encoding: "utf8", mode: 0o600 });
-      await rename(temporaryPath, this.storePath);
     });
-    return this.persistQueue;
+    const updated = this.store.update(broadcast.id, aggregate);
+    return { broadcast: updated, replayed: false };
+  }
+
+  async cancel(id) {
+    const broadcast = this.store.get(id);
+    if (!broadcast) throw problem("broadcast not found", 404);
+    if (["SUCCEEDED", "PARTIAL_FAILED", "FAILED", "CANCELED"].includes(broadcast.state)) return broadcast;
+    this.store.update(id, (item) => { item.state = "CANCELED_REQUESTED"; });
+    await Promise.allSettled(broadcast.targets.filter((target) => target.channelUuid && !terminalTargetStates.has(target.state)).map((target) => (
+      this.esl.execute(`uuid_kill ${target.channelUuid} NORMAL_CLEARING`)
+    )));
+    return this.store.update(id, (item) => {
+      item.targets.forEach((target) => {
+        if (!terminalTargetStates.has(target.state)) {
+          target.state = "CANCELED";
+          target.finishedAt = new Date().toISOString();
+        }
+      });
+      item.state = "CANCELED";
+      item.finishedAt = new Date().toISOString();
+    });
+  }
+
+  handleEvent(event) {
+    const eventName = event["Event-Name"];
+    const broadcastId = event.variable_sip_broadcast_id;
+    const targetId = event.variable_sip_target_id;
+
+    if (eventName === "BACKGROUND_JOB" && String(event["Job-Command-Output"] ?? "").startsWith("-ERR")) {
+      const match = this.store.findTargetByJobUuid(event["Job-UUID"]);
+      if (match) this.failTarget(match.broadcastId, match.targetId, event["Job-Command-Output"]);
+      return;
+    }
+    if (!broadcastId || !targetId || !this.store.get(broadcastId)) return;
+    if (eventName === "CHANNEL_ANSWER") {
+      this.store.updateTarget(broadcastId, targetId, (target, broadcast) => {
+        target.state = "ANSWERED";
+        target.answeredAt = new Date().toISOString();
+        broadcast.state = "RUNNING";
+      });
+    }
+    if (eventName === "CHANNEL_HANGUP_COMPLETE") {
+      const cause = event["Hangup-Cause"] ?? "UNKNOWN";
+      this.store.updateTarget(broadcastId, targetId, (target, broadcast) => {
+        target.state = target.answeredAt && cause === "NORMAL_CLEARING" ? "SUCCEEDED" : "FAILED";
+        target.failureCause = target.state === "FAILED" ? cause : null;
+        target.finishedAt = new Date().toISOString();
+        aggregate(broadcast);
+      });
+    }
+  }
+
+  failTarget(broadcastId, targetId, cause) {
+    this.store.updateTarget(broadcastId, targetId, (target, broadcast) => {
+      target.state = "FAILED";
+      target.failureCause = cause;
+      target.finishedAt = new Date().toISOString();
+      aggregate(broadcast);
+    });
   }
 }

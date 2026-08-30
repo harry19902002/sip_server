@@ -17,7 +17,14 @@
     "freeswitch:up": "docker compose up -d",
     "freeswitch:down": "docker compose down",
     "freeswitch:logs": "docker compose logs -f freeswitch freeswitch-api",
-    "freeswitch:api:test": "node --test services/freeswitch-api/test/*.test.mjs"
+    "deploy:windows": "powershell -ExecutionPolicy Bypass -File scripts/deploy.ps1",
+    "deploy:linux": "bash scripts/deploy.sh",
+    "deploy:check:windows": "powershell -ExecutionPolicy Bypass -File scripts/deploy.ps1 -ValidateOnly",
+    "deploy:stop:windows": "powershell -ExecutionPolicy Bypass -File scripts/stop.ps1",
+    "deploy:stop:linux": "bash scripts/stop.sh",
+    "freeswitch:api:test": "node --test services/freeswitch-api/test/*.test.mjs",
+    "freeswitch:e2e:test": "node tests/sip-broadcast.integration.mjs",
+    "media:e2e:test": "node tests/media-api.integration.mjs"
   },
   "dependencies": {
     "drizzle-orm": "0.45.2",

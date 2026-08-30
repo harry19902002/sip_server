@@ -5,25 +5,11 @@ services:
     build:
       context: ./infra/freeswitch
       args:
-        FREESWITCH_REF: ${FREESWITCH_REF:-v1.11.1}
-        SPANDSP_REF: ${SPANDSP_REF:-v3.1.0}
-        SOFIA_SIP_REF: ${SOFIA_SIP_REF:-v1.13.17}
-    image: sip-server/freeswitch:${FREESWITCH_REF:-v1.11.1}
+        FREESWITCH_VERSION: ${FREESWITCH_VERSION:-1.11.2}
+        SOFIA_SIP_VERSION: ${SOFIA_SIP_VERSION:-1.13.18}
+        SPANDSP_VERSION: ${SPANDSP_VERSION:-3.1.1}
+    image: sip-server/freeswitch:${FREESWITCH_VERSION:-1.11.2}
     restart: unless-stopped
-    command:
-      - freeswitch
-      - -conf
-      - /etc/freeswitch
-      - -log
-      - /var/log/freeswitch
-      - -db
-      - /var/lib/freeswitch/db
-      - -u
-      - freeswitch
-      - -g
-      - freeswitch
-      - -nonat
-      - -nf
     environment:
       ESL_PASSWORD: ${ESL_PASSWORD:?Set ESL_PASSWORD in .env}
       FREESWITCH_DOMAIN: ${FREESWITCH_DOMAIN:-sip.local}
@@ -31,19 +17,18 @@ services:
       SIP_DEFAULT_PASSWORD: ${SIP_DEFAULT_PASSWORD:?Set SIP_DEFAULT_PASSWORD in .env}
     volumes:
       - ./infra/freeswitch/config/event_socket.conf.xml.template:/opt/sip-server/event_socket.conf.xml.template:ro
-      - ./infra/freeswitch/config/acl.conf.xml:/etc/freeswitch/autoload_configs/acl.conf.xml:ro
-      - ./infra/freeswitch/config/modules.conf.xml:/etc/freeswitch/autoload_configs/modules.conf.xml:ro
       - ./infra/freeswitch/config/switch.conf.xml:/etc/freeswitch/autoload_configs/switch.conf.xml:ro
+      - ./infra/freeswitch/config/acl.conf.xml:/etc/freeswitch/autoload_configs/acl.conf.xml:ro
       - freeswitch-recordings:/var/lib/freeswitch/recordings
       - freeswitch-storage:/var/lib/freeswitch/storage
-      - freeswitch-db:/var/lib/freeswitch/db
+      - media-data:/var/lib/freeswitch/storage/media:ro
+      - sip-directory:/etc/freeswitch/directory/default
     ports:
       - "${SIP_PORT:-5060}:5060/tcp"
       - "${SIP_PORT:-5060}:5060/udp"
       - "${RTP_PORT_START:-16384}-${RTP_PORT_END:-16484}:16384-16484/udp"
     networks:
-      sip-control:
-        ipv4_address: 172.30.0.2
+      - sip-control
     healthcheck:
       test: ["CMD-SHELL", "fs_cli -H 127.0.0.1 -P 8021 -p \"$$ESL_PASSWORD\" -x status | grep -q '^UP'"]
       interval: 15s
@@ -63,18 +48,31 @@ services:
       ESL_PORT: 8021
       ESL_PASSWORD: ${ESL_PASSWORD:?Set ESL_PASSWORD in .env}
       FREESWITCH_DOMAIN: ${FREESWITCH_DOMAIN:-sip.local}
+      SIP_PORT: ${SIP_PORT:-5060}
+      SIP_SERVER_HOST: ${SIP_SERVER_HOST:-127.0.0.1}
       ESL_TIMEOUT_MS: ${ESL_TIMEOUT_MS:-5000}
-      TASK_STORE_PATH: /data/broadcast-tasks.json
-    volumes:
-      - freeswitch-api-data:/data
+      BROADCAST_DATA_FILE: /data/broadcasts.json
+      MEDIA_DATA_FILE: /data/media.json
+      MEDIA_DIRECTORY: /media
+      SIP_DIRECTORY: /sip-directory
+      TERMINAL_METADATA_FILE: /data/terminals.json
+      ZONE_DATA_FILE: /data/zones.json
+      SCHEDULE_DATA_FILE: /data/schedules.json
+      SYSTEM_DATA_FILE: /data/system.json
+      SYSTEM_ADMIN_USERNAME: ${SYSTEM_ADMIN_USERNAME:-admin}
+      SYSTEM_ADMIN_PASSWORD: ${SYSTEM_ADMIN_PASSWORD:-123456}
+      ALLOW_INSECURE_BROWSER_API: ${ALLOW_INSECURE_BROWSER_API:-true}
     depends_on:
       freeswitch:
         condition: service_healthy
     ports:
       - "127.0.0.1:${FREESWITCH_API_PORT:-3001}:3001"
+    volumes:
+      - broadcast-data:/data
+      - media-data:/media
+      - sip-directory:/sip-directory
     networks:
-      sip-control:
-        ipv4_address: 172.30.0.3
+      - sip-control
     healthcheck:
       test: ["CMD", "node", "healthcheck.mjs"]
       interval: 15s
@@ -85,12 +83,10 @@ networks:
   sip-control:
     driver: bridge
     internal: false
-    ipam:
-      config:
-        - subnet: 172.30.0.0/24
 
 volumes:
   freeswitch-recordings:
   freeswitch-storage:
-  freeswitch-db:
-  freeswitch-api-data:
+  broadcast-data:
+  media-data:
+  sip-directory:

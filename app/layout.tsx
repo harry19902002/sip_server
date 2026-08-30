@@ -12,5 +12,5 @@ export const metadata: Metadata = {
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
-  return <html lang="zh-CN"><body className={`${geistSans.variable} ${geistMono.variable}`}>{children}</body></html>;
+  return <html lang="zh-CN" suppressHydrationWarning><head><script dangerouslySetInnerHTML={{ __html: `try{var t=localStorage.getItem("sip-theme");if(t==="dark")document.documentElement.dataset.theme="dark"}catch(e){}` }} /></head><body className={`${geistSans.variable} ${geistMono.variable}`}>{children}</body></html>;
 }

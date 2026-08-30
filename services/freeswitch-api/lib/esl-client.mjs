@@ -132,3 +132,72 @@ export class EslClient {
     }
   }
 }
+
+export class EslEventSubscriber {
+  constructor({ host, port = 8021, password, reconnectMs = 2000 }) {
+    this.host = host;
+    this.port = port;
+    this.password = password;
+    this.reconnectMs = reconnectMs;
+    this.stopped = true;
+    this.socket = null;
+    this.timer = null;
+  }
+
+  start(onEvent, onState = () => {}) {
+    this.stopped = false;
+    this.onEvent = onEvent;
+    this.onState = onState;
+    this.connect();
+  }
+
+  stop() {
+    this.stopped = true;
+    clearTimeout(this.timer);
+    this.socket?.destroy();
+  }
+
+  async connect() {
+    if (this.stopped) return;
+    const socket = net.createConnection({ host: this.host, port: this.port });
+    this.socket = socket;
+    const nextFrame = createFrameReader(socket);
+    let authenticated = false;
+
+    const reconnect = (error) => {
+      if (this.stopped) return;
+      this.onState({ connected: false, error: error?.message ?? "ESL event connection closed" });
+      clearTimeout(this.timer);
+      this.timer = setTimeout(() => this.connect(), this.reconnectMs);
+    };
+
+    socket.once("error", reconnect);
+    socket.once("close", () => reconnect());
+
+    try {
+      const challenge = await nextFrame();
+      if (challenge.headers["content-type"] !== "auth/request") throw new Error("FreeSWITCH did not request ESL authentication");
+      socket.write(`auth ${this.password}\n\n`);
+      const authentication = await nextFrame();
+      if (!authentication.headers["reply-text"]?.startsWith("+OK")) throw new Error("FreeSWITCH ESL event authentication failed");
+      authenticated = true;
+      socket.write("event json BACKGROUND_JOB CHANNEL_ANSWER CHANNEL_HANGUP_COMPLETE CUSTOM sofia::register sofia::unregister\n\n");
+      const subscription = await nextFrame();
+      if (!subscription.headers["reply-text"]?.startsWith("+OK")) throw new Error("FreeSWITCH rejected ESL event subscription");
+      this.onState({ connected: true });
+
+      while (!this.stopped && !socket.destroyed) {
+        const frame = await nextFrame();
+        if (frame.headers["content-type"] !== "text/event-json") continue;
+        try {
+          this.onEvent(JSON.parse(frame.body));
+        } catch (error) {
+          this.onState({ connected: true, error: `Invalid ESL event: ${error.message}` });
+        }
+      }
+    } catch (error) {
+      if (!authenticated || !socket.destroyed) socket.destroy();
+      reconnect(error);
+    }
+  }
+}

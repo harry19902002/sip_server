@@ -4,7 +4,7 @@
     <param name="listen-ip" value="0.0.0.0"/>
     <param name="listen-port" value="8021"/>
     <param name="password" value="__ESL_PASSWORD__"/>
-    <param name="apply-inbound-acl" value="sip-control.esl"/>
+    <param name="apply-inbound-acl" value="esl-control"/>
     <param name="stop-on-bind-error" value="true"/>
   </settings>
 </configuration>
