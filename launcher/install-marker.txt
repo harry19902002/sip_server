@@ -1,0 +1,12 @@
+SIP Broadcast System · Installed Mode Marker
+
+本文件由安装包写入，用于标记「这是安装版本」而非便携版本。
+
+作用：启动器检测到本文件后，会把可写数据（业务数据、媒体文件、
+FreeSWITCH 的配置与日志）放到用户目录：
+
+    %LOCALAPPDATA%\SIPBroadcast\
+
+这样即使程序安装在 C:\Program Files 下（默认不可写），也能正常运行。
+
+如需改为便携模式：删除本文件，并把整个程序目录拷贝到可写位置即可。
