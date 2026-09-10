@@ -42,5 +42,13 @@ yarn-error.log*
 /.sites/
 /.runtime/
 
+# portable Windows build output
+/dist-portable/
+__pycache__/
+*.pyc
+
+# typescript incremental build info
+*.tsbuildinfo
+
 # agent workspace (local memory / skills)
 /.workbuddy/

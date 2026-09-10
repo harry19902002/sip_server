@@ -22,6 +22,8 @@
     "deploy:check:windows": "powershell -ExecutionPolicy Bypass -File scripts/deploy.ps1 -ValidateOnly",
     "deploy:stop:windows": "powershell -ExecutionPolicy Bypass -File scripts/stop.ps1",
     "deploy:stop:linux": "bash scripts/stop.sh",
+    "portable:build": "powershell -ExecutionPolicy Bypass -File launcher/build-portable.ps1",
+    "portable:check": "python launcher/selftest.py",
     "freeswitch:api:test": "node --test services/freeswitch-api/test/*.test.mjs",
     "freeswitch:e2e:test": "node tests/sip-broadcast.integration.mjs",
     "media:e2e:test": "node tests/media-api.integration.mjs"

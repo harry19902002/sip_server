@@ -39,6 +39,21 @@ FreeSWITCH、Sofia-SIP 和 SpanDSP 在 Docker 镜像构建阶段从 GitHub relea
 
 ## 一键部署
 
+### 0. Windows 安装包 / 便携版（免 Docker）
+
+如果目标电脑不想安装 Docker 与 Node.js，可直接使用 Windows 版本：
+
+- **安装包**：`SIPBroadcast-Setup-0.1.0.exe`，双击按向导安装，提供开始菜单与卸载入口
+- **便携版**：双击 `SIPBroadcast.exe` 即自动启动全部服务，托盘常驻显示状态，关闭即停服
+
+```powershell
+# 在开发机上一条命令生成便携包与安装包
+powershell -ExecutionPolicy Bypass -File launcher\build-portable.ps1 -DownloadFreeswitch
+```
+
+两者的可写数据位置会自动区分（安装版放 `%LOCALAPPDATA%\SIPBroadcast`，
+便携版放程序目录下的 `data/`）。详见 [docs/windows-portable.md](docs/windows-portable.md)。
+
 ### 1. 准备环境变量
 
 Windows：
@@ -231,6 +246,7 @@ Compose 使用以下命名卷保存数据：
 app/                         管理端页面、组件与样式
 infra/freeswitch/            FreeSWITCH 源码构建镜像和配置
 services/freeswitch-api/     业务 REST API、ESL 控制与持久化
+launcher/                    Windows 便携版启动器（GUI + 托盘 + 打包脚本）
 scripts/                     Windows / Linux 部署与停止脚本
 tests/                       前端渲染和业务集成测试
 compose.yaml                 FreeSWITCH 与后端服务编排

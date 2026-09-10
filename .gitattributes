@@ -1,0 +1,28 @@
+# 统一换行符，避免跨平台协作时脚本被破坏。
+#
+# 背景：Windows 上 core.autocrlf=true 会在检出时把 LF 转成 CRLF。
+# 对 .ps1 / .bat 无影响，但对 shell 脚本与 Python 会造成困扰，
+# 且会让「同一份文件」在不同平台产生无意义的 diff。
+#
+# 策略：仓库内统一存 LF，工作区也保持 LF（text=auto 由 Git 归一化）。
+
+* text=auto eol=lf
+
+# Windows 脚本：显式声明为文本，按仓库规范存 LF
+*.ps1   text eol=lf
+*.bat   text eol=lf
+
+# 二进制文件：不做任何换行转换
+*.ico   binary
+*.png   binary
+*.jpg   binary
+*.exe   binary
+*.dll   binary
+*.msi   binary
+*.woff2 binary
+*.wav   binary
+*.mp3   binary
+*.pyc   binary
+
+# 锁文件：视为文本但不在 diff 中展开（体积大且机器生成）
+package-lock.json  text eol=lf
