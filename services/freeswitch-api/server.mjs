@@ -20,6 +20,13 @@ const config = {
   dataFile: process.env.BROADCAST_DATA_FILE ?? "/data/broadcasts.json",
   mediaDataFile: process.env.MEDIA_DATA_FILE ?? "/data/media.json",
   mediaDirectory: process.env.MEDIA_DIRECTORY ?? "/media",
+  // 音频在 FreeSWITCH 侧的可访问路径前缀；Windows 便携部署时可覆盖
+  mediaFreeswitchPrefix: process.env.MEDIA_FREESWITCH_PREFIX ?? "/var/lib/freeswitch/storage/media",
+  // 允许广播的音频根目录，逗号分隔；未设置时使用内置默认值
+  audioRoots: (process.env.AUDIO_ROOTS ?? "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean),
   sipDirectory: process.env.SIP_DIRECTORY ?? "/sip-directory",
   sipPort: Number(process.env.SIP_PORT ?? 5060),
   sipServerHost: process.env.SIP_SERVER_HOST ?? "127.0.0.1",
@@ -46,8 +53,12 @@ if (!config.apiKey || !config.esl.password) {
 const esl = new EslClient(config.esl);
 const eventSubscriber = new EslEventSubscriber(config.esl);
 const store = new BroadcastStore(config.dataFile);
-const broadcasts = new BroadcastService({ store, esl, domain: config.domain });
-const media = new MediaStore({ metadataFile: config.mediaDataFile, mediaDirectory: config.mediaDirectory });
+const broadcasts = new BroadcastService({ store, esl, domain: config.domain, audioRoots: config.audioRoots });
+const media = new MediaStore({
+  metadataFile: config.mediaDataFile,
+  mediaDirectory: config.mediaDirectory,
+  freeswitchPrefix: config.mediaFreeswitchPrefix,
+});
 const sipAccounts = new SipAccountStore(config.sipDirectory);
 const terminalMetadata = new TerminalMetadataStore(config.terminalMetadataFile);
 const zones = new ZoneStore(config.zoneDataFile);

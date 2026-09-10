@@ -85,7 +85,10 @@ type LiveTerminal = {
   priority: number;
 };
 
-const broadcastApiBase = `http://${typeof window === "undefined" ? "127.0.0.1" : window.location.hostname}:3001/api/v1`;
+// 业务 API 端口：默认 3001，构建便携版时可通过 VITE_API_PORT 注入，
+// 使前端与启动器配置的端口保持一致。
+const broadcastApiPort = (import.meta.env?.VITE_API_PORT as string | undefined) || "3001";
+const broadcastApiBase = `http://${typeof window === "undefined" ? "127.0.0.1" : window.location.hostname}:${broadcastApiPort}/api/v1`;
 
 const failureCauseMeta: Record<string, { label: string; description: string }> = {
   RECOVERY_ON_TIMER_EXPIRE: { label: "终端响应超时", description: "呼叫未在规定时间内建立" },

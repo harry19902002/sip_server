@@ -1,19 +1,36 @@
 import { randomUUID } from "node:crypto";
 
 const extensionPattern = /^[0-9]{2,12}$/;
-const fileAudioPattern = /^\/(?:usr\/share\/freeswitch\/sounds|var\/lib\/freeswitch\/(?:storage|recordings))\/[a-zA-Z0-9_./-]+\.(?:wav|mp3)$/;
 const toneAudioPattern = /^tone_stream:\/\/%\([0-9]{1,5},[0-9]{1,5},[0-9]{2,5}\)$/;
 const terminalTargetStates = new Set(["SUCCEEDED", "FAILED", "CANCELED"]);
+
+// 允许的音频根目录。容器部署为 Linux 绝对路径；Windows 便携部署时
+// 媒体目录位于便携包内，因此额外放行盘符路径。
+const defaultAudioRoots = ["/usr/share/freeswitch/sounds", "/var/lib/freeswitch/storage", "/var/lib/freeswitch/recordings"];
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function buildAudioPattern(roots) {
+  const alternatives = roots
+    .map((root) => root.replace(/\\/g, "/").replace(/\/+$/, ""))
+    .filter(Boolean)
+    .map((root) => escapeRegExp(root));
+  // Windows 盘符路径（如 C:/...）也纳入白名单
+  alternatives.push("[A-Za-z]:");
+  return new RegExp(`^(?:${alternatives.join("|")})/[a-zA-Z0-9_./ -]+\\.(?:wav|mp3)$`);
+}
 
 function problem(message, status = 400) {
   return Object.assign(new Error(message), { status });
 }
 
-function approvedAudio(audio) {
-  if (fileAudioPattern.test(audio) || toneAudioPattern.test(audio)) return true;
+function approvedAudio(audio, pattern) {
+  if (pattern.test(audio) || toneAudioPattern.test(audio)) return true;
   if (!audio.startsWith("file_string://")) return false;
   const files = audio.slice("file_string://".length).split("!");
-  return files.length > 0 && files.length <= 100 && files.every((file) => fileAudioPattern.test(file));
+  return files.length > 0 && files.length <= 100 && files.every((file) => pattern.test(file));
 }
 
 function aggregate(broadcast) {
@@ -29,10 +46,11 @@ function aggregate(broadcast) {
 }
 
 export class BroadcastService {
-  constructor({ store, esl, domain }) {
+  constructor({ store, esl, domain, audioRoots }) {
     this.store = store;
     this.esl = esl;
     this.domain = domain;
+    this.audioPattern = buildAudioPattern(audioRoots?.length ? audioRoots : defaultAudioRoots);
   }
 
   list(filters) {
@@ -57,7 +75,7 @@ export class BroadcastService {
     if (!targets.length || targets.length > 500 || targets.some((target) => !extensionPattern.test(target))) {
       throw problem("targets must contain 1-500 numeric SIP extensions");
     }
-    if (!approvedAudio(audio)) {
+    if (!approvedAudio(audio, this.audioPattern)) {
       throw problem("audio must be an approved WAV/MP3 path, media playlist, or a safe tone_stream test URI");
     }
     if (!extensionPattern.test(callerId)) throw problem("callerId must be numeric");

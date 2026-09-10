@@ -11,9 +11,12 @@ function clone(value) {
 }
 
 export class MediaStore {
-  constructor({ metadataFile, mediaDirectory }) {
+  constructor({ metadataFile, mediaDirectory, freeswitchPrefix }) {
     this.metadataFile = metadataFile;
     this.mediaDirectory = mediaDirectory;
+    // 音频文件在 FreeSWITCH 侧的可访问路径。容器部署时是 Linux 绝对路径，
+    // Windows 便携部署时可指向便携目录，因此允许通过环境变量覆盖。
+    this.freeswitchPrefix = (freeswitchPrefix ?? "/var/lib/freeswitch/storage/media").replace(/\/+$/, "");
     this.state = { files: [], playlists: [] };
     this.load();
   }
@@ -72,7 +75,7 @@ export class MediaStore {
       contentType: extension === ".wav" ? "audio/wav" : "audio/mpeg",
       size: buffer.length,
       storageName,
-      freeswitchPath: `/var/lib/freeswitch/storage/media/${storageName}`,
+      freeswitchPath: `${this.freeswitchPrefix}/${storageName}`,
       createdAt: now,
     };
     writeFileSync(join(this.mediaDirectory, storageName), buffer, { flag: "wx" });
