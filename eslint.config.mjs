@@ -11,9 +11,11 @@ const eslintConfig = defineConfig([
   globalIgnores([
     ".next/**",
     "dist/**",
+    "dist-portable/**",
     "out/**",
     "build/**",
     "next-env.d.ts",
+    ".runtime/**",
   ]),
   eslint.configs.recommended,
   ...tseslint.configs.recommended,

@@ -796,7 +796,9 @@ function SipAccounts({ notify }: { notify: (message: string) => void }) {
       setAccounts(payload.items);
       setSelectedAccounts((current) => current.filter((account) => payload.items.some((item) => item.account === account)));
       setUpdatedAt(payload.updatedAt);
-      setSipServer({ host: window.location.hostname || "127.0.0.1", ...payload.server });
+      // SIP 服务器地址以后端返回为准（终端要注册的地址）；后端未返回时
+      // 回退到浏览器当前主机名，最后兜底本机地址。
+      setSipServer({ ...payload.server, host: payload.server.host || window.location.hostname || "127.0.0.1" });
       setLoadError("");
       if (showNotice) notify(`已同步 ${payload.items.length} 个 SIP 账号`);
     } catch (requestError) {
