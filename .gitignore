@@ -47,6 +47,9 @@ yarn-error.log*
 __pycache__/
 *.pyc
 
+# runtime logs (launcher / services write here at run time)
+/logs/
+
 # typescript incremental build info
 *.tsbuildinfo
 

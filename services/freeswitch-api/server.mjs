@@ -67,12 +67,42 @@ const system = new SystemStore(config.systemDataFile);
 system.ensureBootstrapAdmin({ username: config.systemAdminUsername, name: "系统管理员", password: config.systemAdminPassword });
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+// 局域网部署时，管理页面通过 http://<局域网IP>:3000 打开，
+// 而 API 在 <局域网IP>:3001，属于同主机跨端口。浏览器会带上
+// Origin: http://<局域网IP>:3000，若白名单只放行回环地址，
+// 登录等所有带凭据请求都会被 CORS 拦截（表现为「页面能开、但登录无反应」）。
+// 因此除回环地址外，还要放行私有网段与同为私有网段的 Host。
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
+
+function isPrivateHostname(hostname) {
+  const host = String(hostname ?? "").replace(/^\[|\]$/g, "").toLowerCase();
+  if (!host) return false;
+  if (LOOPBACK_HOSTS.has(host)) return true;
+  if (host.endsWith(".localhost")) return true;
+  // IPv4 私有 / 链路本地网段
+  if (/^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+  if (/^192\.168\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+  if (/^169\.254\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+  // IPv6 唯一本地地址 / 链路本地
+  if (/^f[cd][0-9a-f]{2}:/.test(host)) return true;
+  if (/^fe80:/.test(host)) return true;
+  return false;
+}
+
 function browserOrigin(request) {
   const origin = request.headers.origin;
   if (!config.allowBrowserApi || typeof origin !== "string") return null;
   try {
     const url = new URL(origin);
-    return ["127.0.0.1", "localhost"].includes(url.hostname) ? origin : null;
+    if (!isPrivateHostname(url.hostname)) return null;
+    // 同主机校验：Origin 的主机必须与本次请求到达的主机一致，
+    // 避免页面挂在 A 机器却去调用 B 机器的 API。
+    const hostHeader = String(request.headers.host ?? "").split(":")[0];
+    if (hostHeader && url.hostname !== hostHeader && !LOOPBACK_HOSTS.has(hostHeader)) {
+      return null;
+    }
+    return origin;
   } catch {
     return null;
   }

@@ -149,9 +149,13 @@ class AppConfig:
     sip_domain: str = "sip.local"
 
     # FreeSWITCH 在 Windows 上无法像 Linux 一样被容器编排，
-    # 这里保留可配置的监听地址，默认仅本机。
-    api_host: str = "127.0.0.1"
-    frontend_host: str = "127.0.0.1"
+    # 这里保留可配置的监听地址。
+    #
+    # 前端必须监听 0.0.0.0：局域网内的手机 / 平板 / 其他电脑要打开管理页面
+    # 和「局域网地址」，若只绑 127.0.0.1 则除本机外一律连不上。
+    # 业务 API 服务（server.mjs）自身已固定监听 0.0.0.0，无需在此配置。
+    api_host: str = "0.0.0.0"
+    frontend_host: str = "0.0.0.0"
     # SIP 终端注册时使用的服务器地址；留空则自动探测局域网 IP
     sip_server_host: str = ""
     # FreeSWITCH 显式绑定的网卡 IP；留空则沿用 sip_server_host。
@@ -290,6 +294,8 @@ class AppConfig:
             "sip_domain": self.sip_domain,
             "bind_ip": self.bind_ip,
             "sip_server_host": self.sip_server_host,
+            "frontend_host": self.frontend_host,
+            "api_host": self.api_host,
             "auto_open_browser": self.auto_open_browser,
         })
 

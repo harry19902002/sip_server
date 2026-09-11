@@ -448,6 +448,8 @@ if (-not (Test-Path -LiteralPath $configPath)) {
   "esl_port": 8021,
   "sip_port": 5060,
   "sip_domain": "sip.local",
+  "frontend_host": "0.0.0.0",
+  "api_host": "0.0.0.0",
   "auto_open_browser": true
 }
 '@
@@ -469,7 +471,8 @@ SIP 广播系统 · Windows 便携版
   程序会一并停止 FreeSWITCH、业务 API 与管理前端，不会残留后台进程。
 
 【访问】
-  管理页面：http://127.0.0.1:3000/
+  本机管理页面：http://127.0.0.1:3000/
+  局域网访问：  http://<本机局域网IP>:3000/（启动器界面会显示完整地址）
   初始账号：admin / 123456（首次登录后请立即修改密码）
   局域网内其他设备的 SIP 终端请使用界面显示的「局域网地址」。
 
