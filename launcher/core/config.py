@@ -154,6 +154,11 @@ class AppConfig:
     frontend_host: str = "127.0.0.1"
     # SIP 终端注册时使用的服务器地址；留空则自动探测局域网 IP
     sip_server_host: str = ""
+    # FreeSWITCH 显式绑定的网卡 IP；留空则沿用 sip_server_host。
+    # 机器上存在代理 TUN 虚拟网卡（如 Clash/Mihomo 的 198.18.0.1）时，
+    # FreeSWITCH 自动探测会选中虚拟网卡导致终端注册失败，此时需要在
+    # 界面上显式选定真实网卡。
+    bind_ip: str = ""
 
     esl_password: str = "sip-broadcast-esl"
     api_key: str = "sip-broadcast-api-key"
@@ -188,9 +193,17 @@ class AppConfig:
         if not config.freeweb_runtime_dir:
             config.freeweb_runtime_dir = str(paths.freeswitch)
 
+        # 显式指定了绑定网卡时，SIP 终端地址也默认跟随该网卡，
+        # 避免出现「绑 A 网卡、却告诉终端去连 B 地址」的不一致。
+        if config.bind_ip and not config.raw.get("sip_server_host"):
+            config.sip_server_host = config.bind_ip
+
         # SIP 终端需要访问真实网卡地址，而非回环地址
         if not config.sip_server_host:
             config.sip_server_host = detect_lan_ip()
+
+        if not config.bind_ip:
+            config.bind_ip = config.sip_server_host
 
         if not config.open_browser_url:
             config.open_browser_url = f"http://127.0.0.1:{config.frontend_port}/"
@@ -245,6 +258,51 @@ class AppConfig:
             except (TypeError, ValueError):
                 continue
 
+    # ---------- 保存 ----------
+
+    def save(self, paths: RuntimePaths) -> None:
+        """把当前配置写回 config.json，使界面上的修改持久生效。
+
+        只写入用户可见的少量键，且以 config.json 为基准合并，
+        避免把内部派生字段（如 open_browser_url）写进去。
+        """
+        import json
+
+        target = paths.root / "config.json"
+        if not paths.portable:
+            # 安装模式下配置放在可写数据目录
+            target = paths.data.parent / "config.json"
+
+        payload: dict = {}
+        if target.is_file():
+            try:
+                loaded = json.loads(target.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    payload = loaded
+            except Exception:
+                payload = {}
+
+        payload.update({
+            "frontend_port": self.frontend_port,
+            "api_port": self.api_port,
+            "esl_port": self.esl_port,
+            "sip_port": self.sip_port,
+            "sip_domain": self.sip_domain,
+            "bind_ip": self.bind_ip,
+            "sip_server_host": self.sip_server_host,
+            "auto_open_browser": self.auto_open_browser,
+        })
+
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            # 必须无 BOM，否则再次读取时 json.loads 会失败
+            target.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
+
 
 def _coerce_bool(value) -> bool:
     if isinstance(value, bool):
@@ -258,9 +316,21 @@ def _coerce_bool(value) -> bool:
 def detect_lan_ip() -> str:
     """探测本机在局域网中的地址，用于生成 SIP 终端可访问的配置。
 
-    注意：部分环境（VPN / 代理 TUN 网卡）会返回 198.18.x.x 这类
-    fake-ip 地址，对 SIP 终端不可达，需要跳过并回退到真实网卡。
+    优先从真实网卡（排除代理 TUN 等虚拟网卡）中挑选；部分环境
+    （VPN / 代理 TUN 网卡）会返回 198.18.x.x 这类 fake-ip 地址，
+    对 SIP 终端不可达，需要跳过并回退到真实网卡。
     """
+    # 优先：从网卡枚举结果里挑真实网卡（已排除虚拟网卡）
+    try:
+        from .network import list_adapters
+
+        adapters = list_adapters()
+        if adapters:
+            return adapters[0].ip
+    except Exception:
+        pass
+
+    # 回退：UDP connect 探测 + socket 枚举
     candidates: list[str] = []
 
     # 方式一：UDP connect 探测默认出口地址

@@ -33,8 +33,14 @@ def _bootstrap_import_path() -> None:
 
 _bootstrap_import_path()
 
-from launcher.core.config import AppConfig, RuntimePaths, build_paths  # noqa: E402
+from launcher.core.config import (  # noqa: E402
+    AppConfig,
+    RuntimePaths,
+    build_paths,
+    port_is_free,
+)
 from launcher.core.logger import Logger  # noqa: E402
+from launcher.core.network import describe_ip, list_adapters  # noqa: E402
 from launcher.core.process import ProcessManager  # noqa: E402
 from launcher.core.single_instance import SingleInstance, focus_existing_window  # noqa: E402
 from launcher.core.state import STATE_LABELS, ServiceState, StatusCenter, StatusSnapshot  # noqa: E402
@@ -90,8 +96,8 @@ class LauncherApp:
     def _build_window(self) -> None:
         root = self.root
         root.title(APP_TITLE)
-        root.geometry("720x540")
-        root.minsize(640, 480)
+        root.geometry("780x820")
+        root.minsize(700, 720)
 
         style = ttk.Style(root)
         try:
@@ -152,6 +158,16 @@ class LauncherApp:
 
         ttk.Separator(container, orient="horizontal").pack(fill="x", pady=14)
 
+        # ---- 网卡绑定 ----
+        self._build_adapter_picker(container)
+
+        ttk.Separator(container, orient="horizontal").pack(fill="x", pady=14)
+
+        # ---- 端口配置 ----
+        self._build_port_settings(container)
+
+        ttk.Separator(container, orient="horizontal").pack(fill="x", pady=14)
+
         # ---- 按钮 ----
         actions = ttk.Frame(container)
         actions.pack(fill="x")
@@ -191,6 +207,288 @@ class LauncherApp:
         self.log_widget.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
         self.log_widget.configure(state="disabled")
+
+    # ------------------------------------------------------------ 网卡选择
+
+    def _build_adapter_picker(self, parent: ttk.Frame) -> None:
+        """FreeSWITCH 绑定网卡选择。
+
+        机器上装有代理软件时会出现 TUN 虚拟网卡（如 198.18.0.1），
+        FreeSWITCH 自动探测可能选中它，导致 SIP 终端注册不上。
+        这里让用户显式指定绑定到哪块网卡。
+        """
+        frame = ttk.Frame(parent)
+        frame.pack(fill="x")
+
+        header = ttk.Frame(frame)
+        header.pack(fill="x")
+
+        ttk.Label(header, text="FreeSWITCH 绑定网卡", style="Muted.TLabel").pack(side="left")
+        self.show_virtual = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            header,
+            text="显示虚拟网卡",
+            variable=self.show_virtual,
+            command=self._refresh_adapters,
+        ).pack(side="right")
+
+        row = ttk.Frame(frame)
+        row.pack(fill="x", pady=(6, 0))
+        row.columnconfigure(0, weight=1)
+
+        self.adapter_combo = ttk.Combobox(row, state="readonly", values=[])
+        self.adapter_combo.grid(row=0, column=0, sticky="ew")
+        self.adapter_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_adapter_selected())
+
+        self.apply_adapter_button = ttk.Button(row, text="应用并重启", command=self._apply_adapter)
+        self.apply_adapter_button.grid(row=0, column=1, padx=(8, 0))
+
+        self.adapter_hint = ttk.Label(
+            frame,
+            text="",
+            style="Muted.TLabel",
+            wraplength=690,
+            justify="left",
+        )
+        self.adapter_hint.pack(anchor="w", pady=(6, 0))
+
+        self._adapter_map: dict[str, str] = {}
+        self._refresh_adapters()
+
+    def _refresh_adapters(self) -> None:
+        """按当前选择重新填充网卡下拉框，并尽量保持已选项。"""
+        current_ip = getattr(self.config, "bind_ip", "") or ""
+
+        try:
+            adapters = list_adapters(include_virtual=self.show_virtual.get())
+        except Exception as exc:  # noqa: BLE001
+            self.adapter_hint.configure(text=f"无法枚举网卡: {exc}")
+            return
+
+        self._adapter_map = {}
+        values: list[str] = []
+
+        auto_label = "自动探测（推荐）"
+        self._adapter_map[auto_label] = ""
+        values.append(auto_label)
+
+        for adapter in adapters:
+            label = adapter.label
+            self._adapter_map[label] = adapter.ip
+            values.append(label)
+
+        # 已配置的 IP 若不在当前列表中（例如被「隐藏虚拟网卡」过滤），
+        # 仍补一条，避免用户看到的选择与实际配置不一致。
+        known_ips = set(self._adapter_map.values())
+        if current_ip and current_ip not in known_ips:
+            extra = f"{current_ip} · 当前配置（不在列表）"
+            self._adapter_map[extra] = current_ip
+            values.append(extra)
+
+        self.adapter_combo.configure(values=values)
+
+        selected = None
+        for label, ip in self._adapter_map.items():
+            if ip == current_ip:
+                selected = label
+                break
+        self.adapter_combo.set(selected or auto_label)
+
+        self._update_adapter_hint(current_ip, adapters)
+
+    def _update_adapter_hint(self, current_ip: str, adapters: list) -> None:
+        virtual_hidden = 0
+        try:
+            all_adapters = list_adapters(include_virtual=True)
+            virtual_hidden = len(all_adapters) - len(adapters)
+        except Exception:  # noqa: BLE001
+            pass
+
+        if not current_ip:
+            text = "未指定网卡：由 FreeSWITCH 自动探测。"
+        else:
+            text = f"当前绑定：{describe_ip(current_ip)}。"
+
+        if virtual_hidden > 0:
+            text += f"已隐藏 {virtual_hidden} 块虚拟网卡（代理 TUN 等，选择后会导致 SIP 终端注册不上）。"
+        self.adapter_hint.configure(text=text)
+
+    def _on_adapter_selected(self) -> None:
+        label = self.adapter_combo.get()
+        ip = self._adapter_map.get(label, "")
+        if not ip:
+            self.adapter_hint.configure(text="已选择「自动探测」，保存后由 FreeSWITCH 自行决定绑定网卡。")
+            return
+        self.adapter_hint.configure(text=f"待应用：{describe_ip(ip)}。点击「应用并重启」生效。")
+
+    def _apply_adapter(self) -> None:
+        """保存所选网卡到 config.json，并重启服务使其生效。"""
+        label = self.adapter_combo.get()
+        ip = self._adapter_map.get(label, "")
+
+        self.config.bind_ip = ip
+        # 终端注册地址跟随所选网卡，避免「绑 A 卡却告诉终端连 B 地址」
+        if ip:
+            self.config.sip_server_host = ip
+
+        try:
+            self.config.save(self.paths)
+            self.logger.write(
+                f"已保存绑定网卡配置: {describe_ip(ip) if ip else '自动探测'}"
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.logger.write(f"保存配置失败: {exc}")
+
+        self.status.update(lan_ip=self.config.sip_server_host or "127.0.0.1")
+        self._update_adapter_hint(ip, list_adapters(include_virtual=self.show_virtual.get()))
+
+        if self.manager.is_running():
+            self.logger.write("正在按新网卡配置重启服务…")
+            self.restart_services()
+        else:
+            self.logger.write("服务未运行，配置已保存，下次启动时生效。")
+
+    # ------------------------------------------------------------ 端口配置
+
+    def _build_port_settings(self, parent: ttk.Frame) -> None:
+        """端口配置：管理页面、业务 API、SIP 均可在界面上修改。"""
+        frame = ttk.Frame(parent)
+        frame.pack(fill="x")
+
+        ttk.Label(frame, text="端口配置", style="Muted.TLabel").pack(anchor="w")
+
+        grid = ttk.Frame(frame)
+        grid.pack(fill="x", pady=(6, 0))
+
+        # (显示名, config 字段, 说明)
+        self._port_fields = [
+            ("管理页面", "frontend_port", "浏览器访问地址的端口"),
+            ("业务 API", "api_port", "后端服务端口"),
+            ("SIP 信令", "sip_port", "SIP 终端注册端口"),
+        ]
+        self.port_vars: dict[str, tk.StringVar] = {}
+        self._port_entries: dict[str, ttk.Entry] = {}
+
+        for index, (label, attr, hint) in enumerate(self._port_fields):
+            ttk.Label(grid, text=label, style="Muted.TLabel").grid(
+                row=index, column=0, sticky="w", padx=(0, 10), pady=3
+            )
+            var = tk.StringVar(value=str(getattr(self.config, attr)))
+            entry = ttk.Entry(grid, textvariable=var, width=8, font=("Consolas", 10))
+            entry.grid(row=index, column=1, sticky="w", pady=3)
+            self.port_vars[attr] = var
+            self._port_entries[attr] = entry
+            ttk.Label(grid, text=hint, style="Muted.TLabel").grid(
+                row=index, column=2, sticky="w", padx=(12, 0), pady=3
+            )
+
+        actions = ttk.Frame(frame)
+        actions.pack(fill="x", pady=(8, 0))
+        self.apply_ports_button = ttk.Button(
+            actions, text="应用并重启", command=self._apply_ports
+        )
+        self.apply_ports_button.pack(side="left")
+        ttk.Button(actions, text="恢复默认", command=self._reset_ports).pack(
+            side="left", padx=8
+        )
+
+        self.port_hint = ttk.Label(
+            frame, text="", style="Muted.TLabel", wraplength=690, justify="left"
+        )
+        self.port_hint.pack(anchor="w", pady=(6, 0))
+
+    def _collect_ports(self) -> tuple[dict[str, int] | None, str]:
+        """读取界面上的端口输入，校验后返回 (端口表, 错误信息)。"""
+        values: dict[str, int] = {}
+        for label, attr, _hint in self._port_fields:
+            raw = self.port_vars[attr].get().strip()
+            if not raw.isdigit():
+                return None, f"「{label}」端口必须是数字。"
+            port = int(raw)
+            if not (1 <= port <= 65535):
+                return None, f"「{label}」端口需在 1-65535 之间。"
+            values[attr] = port
+
+        if len(set(values.values())) != len(values):
+            return None, "各端口不能重复，请修改后再试。"
+
+        # 端口占用检查：已在运行的服务占着自己当前的端口，属正常，跳过。
+        current = {
+            "frontend_port": self.config.frontend_port,
+            "api_port": self.config.api_port,
+            "sip_port": self.config.sip_port,
+        }
+        for label, attr, _hint in self._port_fields:
+            port = values[attr]
+            if port == current.get(attr) and self.manager.is_running():
+                continue
+            if not port_is_free(port, "127.0.0.1"):
+                return None, f"「{label}」端口 {port} 已被占用，请换一个。"
+        return values, ""
+
+    def _reset_ports(self) -> None:
+        for attr, value in (
+            ("frontend_port", 3000),
+            ("api_port", 3001),
+            ("sip_port", 5060),
+        ):
+            self.port_vars[attr].set(str(value))
+        self.port_hint.configure(text="已填入默认端口，点击「应用并重启」生效。")
+
+    def _sync_port_fields(self) -> None:
+        """把配置里的端口同步到输入框。
+
+        若某个输入框正持有焦点（用户正在输入），则跳过它，避免打断输入。
+        """
+        focused = self.root.focus_get()
+        for _label, attr, _hint in self._port_fields:
+            var = self.port_vars.get(attr)
+            entry = self._port_entries.get(attr)
+            if var is None:
+                continue
+            if entry is not None and focused == entry:
+                continue
+            expected = str(getattr(self.config, attr))
+            if var.get() != expected:
+                var.set(expected)
+
+    def _apply_ports(self) -> None:
+        values, error = self._collect_ports()
+        if values is None:
+            self.port_hint.configure(text=f"⚠ {error}")
+            return
+
+        changed = []
+        for attr, port in values.items():
+            if getattr(self.config, attr) != port:
+                changed.append(attr)
+            setattr(self.config, attr, port)
+
+        # 前端也要知道新的 API 端口（通过环境变量在启动时注入）
+        try:
+            self.config.save(self.paths)
+            detail = "、".join(
+                f"{label} {values[attr]}" for label, attr, _ in self._port_fields
+            )
+            self.logger.write(f"已保存端口配置: {detail}")
+        except Exception as exc:  # noqa: BLE001
+            self.logger.write(f"保存端口配置失败: {exc}")
+
+        # 同步状态中心展示的端口
+        self.status.update(
+            frontend_port=self.config.frontend_port, api_port=self.config.api_port
+        )
+
+        if not changed:
+            self.port_hint.configure(text="端口无变化。")
+            return
+
+        if self.manager.is_running():
+            self.port_hint.configure(text="端口已更新，正在重启服务…")
+            self.logger.write("正在按新端口配置重启服务…")
+            self.restart_services()
+        else:
+            self.port_hint.configure(text="端口已保存，下次启动时生效。")
 
     # ------------------------------------------------------------ 托盘
 
@@ -316,6 +614,9 @@ class LauncherApp:
         self.value_labels["manage_url"].configure(text=manage)
         self.value_labels["api_url"].configure(text=api)
         self.value_labels["lan_url"].configure(text=lan)
+
+        # 端口输入框跟随实际配置（用户手动编辑时不覆盖，避免打断输入）
+        self._sync_port_fields()
 
         progress = " · ".join(
             f"{key}:{value}" for key, value in self.manager.progress.items()

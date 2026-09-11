@@ -40,13 +40,14 @@ class FreeswitchConfigurator:
     # ---------------- 公开入口 ----------------
 
     def render(self, *, esl_password: str, sip_domain: str, sip_default_password: str,
-               external_ip: str, sip_port: int, conf_dir: Path | None = None) -> None:
+               external_ip: str, sip_port: int, conf_dir: Path | None = None,
+               bind_ip: str = "") -> None:
         conf = Path(conf_dir) if conf_dir else (self.fs_root / "conf")
         conf.mkdir(parents=True, exist_ok=True)
 
         self._render_event_socket(conf, esl_password)
-        self._render_vars(conf, sip_domain, sip_default_password, external_ip)
-        self._patch_internal_profile(conf, sip_port)
+        self._render_vars(conf, sip_domain, sip_default_password, external_ip, bind_ip)
+        self._patch_internal_profile(conf, sip_port, bind_ip)
         self._patch_switch_conf(conf)
         self._patch_acl_conf(conf)
         self._patch_modules(conf)
@@ -86,7 +87,8 @@ class FreeswitchConfigurator:
         target.write_text(text, encoding="utf-8")
         self.log(f"[config] 已写入 {target.name}")
 
-    def _render_vars(self, conf: Path, sip_domain: str, sip_default_password: str, external_ip: str) -> None:
+    def _render_vars(self, conf: Path, sip_domain: str, sip_default_password: str,
+                     external_ip: str, bind_ip: str = "") -> None:
         target = conf / "vars.xml"
         if not target.is_file():
             self.log(f"[config] 跳过 vars.xml（不存在）: {target}")
@@ -100,13 +102,17 @@ class FreeswitchConfigurator:
             replacement = rf"\g<1>{value}\g<2>"
             if re.search(pattern, text):
                 text = re.sub(pattern, replacement, text)
-            else:
-                # 属性不存在时补充到 default 的 X-PRE-PROCESS 段落之后
-                text = text.replace(
-                    "</X-PRE-PROCESS>",
-                    f'<X-PRE-PROCESS cmd="set" data="{name}={value}"/>\n</X-PRE-PROCESS>',
-                    1,
-                )
+                return
+            # 属性不存在时插入一条新的 X-PRE-PROCESS。
+            # 注意：示例 conf 里的 X-PRE-PROCESS 都是自闭合的（以 "/>" 结尾），
+            # 不存在 </X-PRE-PROCESS> 结束标签，因此必须按首个自闭合行插入。
+            new_line = f'  <X-PRE-PROCESS cmd="set" data="{name}={value}"/>\n'
+            match = re.search(r'^[ \t]*<X-PRE-PROCESS\b[^>]*/>[ \t]*$', text, re.MULTILINE)
+            if match:
+                insert_at = match.end()
+                text = text[:insert_at] + "\n" + new_line.rstrip("\n") + text[insert_at:]
+            elif "<include>" in text:
+                text = text.replace("<include>", "<include>\n" + new_line, 1)
 
         set_data("domain", _escape_xml(sip_domain))
         set_data("default_password", _escape_xml(sip_default_password))
@@ -115,10 +121,20 @@ class FreeswitchConfigurator:
         set_data("global_codec_prefs", "OPUS,G722,PCMU,PCMA")
         set_data("outbound_codec_prefs", "OPUS,G722,PCMU,PCMA")
 
+        # 显式钉住本机绑定 IP。
+        # 关键：FreeSWITCH 默认用内部探测得到的 local_ip_v4，机器上存在代理
+        # TUN 虚拟网卡（Clash/Mihomo 的 198.18.0.1）时会选错网卡，导致 SIP
+        # 终端注册不上。此处显式 set 会覆盖内部探测值。
+        if bind_ip:
+            set_data("local_ip_v4", _escape_xml(bind_ip))
+            self.log(f"[config] 已固定绑定网卡: local_ip_v4={bind_ip}")
+        else:
+            text = re.sub(r'\s*<X-PRE-PROCESS[^>]*data="local_ip_v4=[^"]*"\s*/>', "", text)
+
         target.write_text(text, encoding="utf-8")
         self.log("[config] 已更新 vars.xml")
 
-    def _patch_internal_profile(self, conf: Path, sip_port: int) -> None:
+    def _patch_internal_profile(self, conf: Path, sip_port: int, bind_ip: str = "") -> None:
         target = conf / "sip_profiles" / "internal.xml"
         if not target.is_file():
             return
@@ -134,6 +150,17 @@ class FreeswitchConfigurator:
             rf"\g<1>{sip_port}\g<2>",
             text,
         )
+
+        # 绑定到指定网卡：把 sip-ip / rtp-ip 的自动探测换成显式地址。
+        # 这样即使机器上有代理 TUN 虚拟网卡，Sofia 也只会绑在选定网卡上。
+        if bind_ip:
+            for param in ("sip-ip", "rtp-ip"):
+                text = re.sub(
+                    rf'(<param\s+name="{param}"\s+value=")[^"]*(")',
+                    rf"\g<1>{bind_ip}\g<2>",
+                    text,
+                )
+            self.log(f"[config] 已固定 SIP/RTP 绑定地址: {bind_ip}")
 
         target.write_text(text, encoding="utf-8")
         self.log("[config] 已更新 internal.xml")

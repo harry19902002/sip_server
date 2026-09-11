@@ -261,6 +261,7 @@ class ProcessManager:
                 external_ip=self.config.sip_server_host,
                 sip_port=self.config.sip_port,
                 conf_dir=conf_dir,
+                bind_ip=self.config.bind_ip,
             )
         except Exception as exc:
             self.log(f"[config] 渲染 FreeSWITCH 配置失败: {exc}")
@@ -385,6 +386,10 @@ class ProcessManager:
 
         env = self._base_env()
         env["PORT"] = str(self.config.frontend_port)
+        # 业务 API 端口随启动器配置变化，通过环境变量传给前端，
+        # 由 layout 注入到 window.__SIP_RUNTIME__，避免改端口后前端失配。
+        env["SIP_API_PORT"] = str(self.config.api_port)
+        env["SIP_FRONTEND_PORT"] = str(self.config.frontend_port)
 
         return self._spawn(
             key="frontend",

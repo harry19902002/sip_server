@@ -85,9 +85,15 @@ type LiveTerminal = {
   priority: number;
 };
 
-// 业务 API 端口：默认 3001，构建便携版时可通过 VITE_API_PORT 注入，
-// 使前端与启动器配置的端口保持一致。
-const broadcastApiPort = (import.meta.env?.VITE_API_PORT as string | undefined) || "3001";
+// 业务 API 端口解析优先级：
+//   1. 运行时注入（window.__SIP_RUNTIME__.apiPort）——启动器在 HTML 里写入，
+//      这样在 GUI 里改端口无需重新构建前端；
+//   2. 构建期注入（VITE_API_PORT）——便携版打包时可烘焙默认值；
+//   3. 兜底 3001。
+const runtimeConfig: { apiPort?: string } | undefined =
+  (globalThis as { __SIP_RUNTIME__?: { apiPort?: string } }).__SIP_RUNTIME__;
+const broadcastApiPort =
+  runtimeConfig?.apiPort || (import.meta.env?.VITE_API_PORT as string | undefined) || "3001";
 const broadcastApiBase = `http://${typeof window === "undefined" ? "127.0.0.1" : window.location.hostname}:${broadcastApiPort}/api/v1`;
 
 const failureCauseMeta: Record<string, { label: string; description: string }> = {
