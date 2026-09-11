@@ -4,7 +4,7 @@
  * labels. Keyboard-accessible close buttons remain available in every dialog. */
 /* eslint-disable jsx-a11y/media-has-caption, jsx-a11y/no-noninteractive-element-interactions, jsx-a11y/no-static-element-interactions, jsx-a11y/no-autofocus */
 
-import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type CSSProperties, type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type PageKey =
   | "overview"
@@ -1110,12 +1110,23 @@ function Tasks() {
   const failedTargets = allTargets.filter((target) => target.state === "FAILED").length;
   const pendingTargets = allTargets.length - successTargets - failedTargets - allTargets.filter((target) => target.state === "CANCELED").length;
   const successRate = allTargets.length ? (successTargets / allTargets.length * 100).toFixed(1) : "0.0";
+  // 环形图扇区比例：按真实终端结果计算累计百分比端点，经 CSS 变量注入。
+  // 顺序为 成功 → 执行中/未确认 → 失败，剩余部分（已取消）由 CSS 以灰色补齐。
+  const donutPercent = (count: number) => (allTargets.length ? (count / allTargets.length) * 100 : 0);
+  const donutSuccessEnd = donutPercent(successTargets);
+  const donutPendingEnd = donutSuccessEnd + donutPercent(pendingTargets);
+  const donutFailedEnd = donutPendingEnd + donutPercent(failedTargets);
+  const donutStyle = {
+    "--donut-success": `${donutSuccessEnd}%`,
+    "--donut-pending": `${donutPendingEnd}%`,
+    "--donut-failed": `${donutFailedEnd}%`,
+  } as CSSProperties;
   const causes = Object.entries(allTargets.filter((target) => target.failureCause).reduce<Record<string, number>>((result, target) => { const cause = target.failureCause || "UNKNOWN"; result[cause] = (result[cause] ?? 0) + 1; return result; }, {})).sort((a, b) => b[1] - a[1]).slice(0, 3);
   return <div className="page"><div className="page-heading split-heading"><div><div className="breadcrumb">广播中心 / 任务中心</div><h1>任务中心</h1><p>统一查看广播记录、终端执行结果和异常原因。</p></div><button className="button button-secondary" onClick={() => void refresh()}>↻ 刷新</button></div>
     {loadError && <div className="media-error"><span>!</span>任务数据读取失败：{loadError}</div>}
     <section className="panel tasks-card"><div className="table-toolbar"><div className="tabs">{(["全部任务", "进行中", "异常", "已完成"] as const).map((item) => <button key={item} onClick={() => setTab(item)} className={tab === item ? "active" : ""}>{item}{item === "全部任务" ? ` ${broadcasts.length}` : item === "进行中" ? ` ${broadcasts.filter((broadcast) => activeStates.has(broadcast.state)).length}` : item === "异常" ? ` ${broadcasts.filter((broadcast) => failedStates.has(broadcast.state)).length}` : ` ${broadcasts.filter((broadcast) => completedStates.has(broadcast.state)).length}`}</button>)}</div><div className="toolbar-actions"><label className="search-field compact"><span>⌕</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索任务名称或编号" /></label></div></div>
     <table className="data-table task-table"><thead><tr><th>任务 / 编号</th><th>类型</th><th>目标范围</th><th>设备结果</th><th>状态</th><th>发起时间</th><th>操作</th></tr></thead><tbody>{rows.map((row) => <tr key={row.id}><td><b>{row.name}</b><small>{row.id}</small></td><td>{row.type}</td><td>{row.target}</td><td><div className="result-progress"><span><i style={{ width: `${parseInt(row.progress) / Math.max(1, parseInt(row.progress.split("/")[1])) * 100}%` }} /></span><b>{row.progress}</b></div></td><td><Status tone={row.status === "播放中" || row.status === "成功" ? "success" : row.status === "失败" ? "danger" : "warning"}>{row.status}</Status></td><td>{row.time}</td><td>{!["SUCCEEDED", "PARTIAL_FAILED", "FAILED", "CANCELED"].includes(row.state) ? <button className="link-action" onClick={() => void cancel(row.id)}>停止</button> : <span>已结束</span>}</td></tr>)}</tbody></table>{rows.length === 0 && <div className="schedule-empty"><b>没有符合条件的任务</b></div>}</section>
-    <div className="task-insight-grid"><section className="panel"><span className="section-kicker">执行质量</span><h2>全部终端结果</h2><div className="donut-row"><div className="donut"><span>{successRate}%<small>成功率</small></span></div><div className="legend-list"><div><i className="green-bg" />成功确认<b>{successTargets}</b></div><div><i className="orange-bg" />执行中 / 未确认<b>{pendingTargets}</b></div><div><i className="red-bg" />失败<b>{failedTargets}</b></div></div></div></section><section className="panel"><span className="section-kicker">异常分析</span><h2>失败原因分布</h2><div className="reason-bars">{causes.map(([cause, count]) => { const meta = getFailureCauseMeta(cause); return <div key={cause} title={`原因码：${cause}`}><span><b>{meta.label}</b><small>{meta.description}</small></span><i><b style={{ width: `${count / Math.max(1, failedTargets) * 100}%` }} /></i><em>{count} 次</em></div>; })}{causes.length === 0 && <p className="schedule-no-history">当前没有异常记录，终端运行正常</p>}</div></section></div>
+    <div className="task-insight-grid"><section className="panel"><span className="section-kicker">执行质量</span><h2>全部终端结果</h2><div className="donut-row"><div className="donut" style={donutStyle}><span>{successRate}%<small>成功率</small></span></div><div className="legend-list"><div><i className="green-bg" />成功确认<b>{successTargets}</b></div><div><i className="orange-bg" />执行中 / 未确认<b>{pendingTargets}</b></div><div><i className="red-bg" />失败<b>{failedTargets}</b></div></div></div></section><section className="panel"><span className="section-kicker">异常分析</span><h2>失败原因分布</h2><div className="reason-bars">{causes.map(([cause, count]) => { const meta = getFailureCauseMeta(cause); return <div key={cause} title={`原因码：${cause}`}><span><b>{meta.label}</b><small>{meta.description}</small></span><i><b style={{ width: `${count / Math.max(1, failedTargets) * 100}%` }} /></i><em>{count} 次</em></div>; })}{causes.length === 0 && <p className="schedule-no-history">当前没有异常记录，终端运行正常</p>}</div></section></div>
   </div>;
 }
 

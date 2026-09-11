@@ -686,7 +686,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .task-insight-grid .panel { min-height: 205px; padding: 20px; }
 .task-insight-grid h2 { margin: 3px 0 16px; font-size: 15px; }
 .donut-row { display: flex; align-items: center; gap: 30px; }
-.donut { width: 112px; height: 112px; display: grid; place-items: center; border-radius: 50%; background: conic-gradient(var(--green) 0 86%, var(--orange) 86% 96%, var(--red) 96% 100%); }
+/* 环形图比例由 JS 按真实终端结果注入（见 page.tsx 的 donutStyle）。
+   默认值均为 0，避免在数据到达前显示误导性的固定比例。 */
+.donut { width: 112px; height: 112px; display: grid; place-items: center; border-radius: 50%; background: conic-gradient(var(--green) 0 var(--donut-success, 0%), var(--orange) var(--donut-success, 0%) var(--donut-pending, 0%), var(--red) var(--donut-pending, 0%) var(--donut-failed, 0%), var(--line) var(--donut-failed, 0%) 100%); }
 .donut::before { content: ""; grid-area: 1/1; width: 78px; height: 78px; border-radius: 50%; background: white; }
 .donut span { z-index: 1; grid-area: 1/1; display: flex; flex-direction: column; text-align: center; font-size: 17px; font-weight: 800; }
 .donut small { margin-top: 2px; color: var(--text-3); font-size: 8px; font-weight: 500; }
