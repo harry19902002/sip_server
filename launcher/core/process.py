@@ -390,6 +390,13 @@ class ProcessManager:
         # 由 layout 注入到 window.__SIP_RUNTIME__，避免改端口后前端失配。
         env["SIP_API_PORT"] = str(self.config.api_port)
         env["SIP_FRONTEND_PORT"] = str(self.config.frontend_port)
+        # 版本号随构建时间注入，前端在管理页脚展示，便于核对部署版本
+        try:
+            from launcher.version import full_version
+
+            env["SIP_APP_VERSION"] = full_version()
+        except Exception:
+            pass
 
         return self._spawn(
             key="frontend",

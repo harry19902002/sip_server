@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHmac, randomInt, randomUUID, timingSafeEqual } from "node:crypto";
 import { createReadStream, statSync } from "node:fs";
 import { EslClient, EslEventSubscriber } from "./lib/esl-client.mjs";
 import { BroadcastStore } from "./lib/broadcast-store.mjs";
@@ -189,6 +189,16 @@ function mediaFilePayload(file) {
 
 function playlistPayload(playlist) {
   return { ...playlist, files: playlist.files.map(mediaFilePayload) };
+}
+
+// Fisher-Yates 洗牌；返回新数组，不修改入参。
+function shufflePaths(items) {
+  const result = [...items];
+  for (let index = result.length - 1; index > 0; index -= 1) {
+    const swap = randomInt(index + 1);
+    [result[index], result[swap]] = [result[swap], result[index]];
+  }
+  return result;
 }
 
 async function readJson(request) {
@@ -427,6 +437,12 @@ async function route(request, response) {
 
   if (request.method === "POST" && url.pathname === "/api/v1/broadcasts") {
     const input = await readJson(request);
+    // 播放模式：单次播放 / 循环播放 / 随机播放。缺省为单次，保持向后兼容。
+    const playMode = input.playMode ? String(input.playMode).toUpperCase() : "ONCE";
+    if (!["ONCE", "LOOP", "SHUFFLE"].includes(playMode)) {
+      return json(response, 400, { error: "invalid_play_mode", message: "播放模式只能是单次播放、循环播放或随机播放", requestId });
+    }
+    input.playMode = playMode;
     if (Array.isArray(input.sources)) {
       if (!input.sources.length || input.sources.length > 50) return json(response, 400, { error: "invalid_sources", message: "播放内容需要选择 1-50 项", requestId });
       const paths = [];
@@ -449,7 +465,9 @@ async function route(request, response) {
         }
       }
       if (paths.length > 100) return json(response, 400, { error: "too_many_media_files", message: "展开播放列表后音频总数不能超过 100 个", requestId });
-      input.audio = paths.length === 1 ? paths[0] : `file_string://${paths.join("!")}`;
+      // 随机播放：打乱展开后的音频顺序，FreeSWITCH 仍按 file_string 顺序播放。
+      const orderedPaths = playMode === "SHUFFLE" ? shufflePaths(paths) : paths;
+      input.audio = orderedPaths.length === 1 ? orderedPaths[0] : `file_string://${orderedPaths.join("!")}`;
       input.sourceType = sourceItems.length === 1 ? sourceItems[0].type : "MIXED";
       input.sourceId = sourceItems.length === 1 ? sourceItems[0].id : null;
       input.sourceName = sourceItems.map((source) => source.name).join("、");
@@ -458,7 +476,8 @@ async function route(request, response) {
       const playlist = media.getPlaylist(String(input.playlistId));
       if (!playlist) return json(response, 404, { error: "playlist_not_found", message: "播放列表不存在", requestId });
       if (!playlist.files.length) return json(response, 400, { error: "playlist_empty", message: "播放列表中没有音频文件", requestId });
-      input.audio = `file_string://${playlist.files.map((file) => file.freeswitchPath).join("!")}`;
+      const playlistPaths = playlist.files.map((file) => file.freeswitchPath);
+      input.audio = `file_string://${(playMode === "SHUFFLE" ? shufflePaths(playlistPaths) : playlistPaths).join("!")}`;
       input.sourceType = "PLAYLIST";
       input.sourceId = playlist.id;
       input.sourceName = playlist.name;

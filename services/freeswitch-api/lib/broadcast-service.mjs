@@ -3,6 +3,13 @@ import { randomUUID } from "node:crypto";
 const extensionPattern = /^[0-9]{2,12}$/;
 const toneAudioPattern = /^tone_stream:\/\/%\([0-9]{1,5},[0-9]{1,5},[0-9]{2,5}\)$/;
 const terminalTargetStates = new Set(["SUCCEEDED", "FAILED", "CANCELED"]);
+// 播放模式：ONCE 单次播放、LOOP 循环播放、SHUFFLE 随机播放（顺序已在上游打乱）。
+const playModes = new Set(["ONCE", "LOOP", "SHUFFLE"]);
+// 循环播放使用 endless_playback，持续循环直到任务被取消或终端挂断；
+// 其余模式使用 playback 顺序播放一次。
+function playApplication(playMode) {
+  return playMode === "LOOP" ? "endless_playback" : "playback";
+}
 
 // 允许的音频根目录。容器部署为 Linux 绝对路径；Windows 便携部署时
 // 媒体目录位于便携包内，因此额外放行盘符路径。
@@ -70,6 +77,7 @@ export class BroadcastService {
     const audio = String(input.audio ?? "");
     const callerId = String(input.callerId ?? "9999");
     const volume = Number(input.volume ?? 75);
+    const playMode = playModes.has(String(input.playMode ?? "").toUpperCase()) ? String(input.playMode).toUpperCase() : "ONCE";
 
     if (!name || name.length > 100) throw problem("name must contain 1-100 characters");
     if (!targets.length || targets.length > 500 || targets.some((target) => !extensionPattern.test(target))) {
@@ -90,6 +98,7 @@ export class BroadcastService {
       audio,
       callerId,
       volume,
+      playMode,
       sourceType: ["PLAYLIST", "MIXED"].includes(input.sourceType) ? input.sourceType : "FILE",
       sourceId: input.sourceId ? String(input.sourceId) : null,
       sourceName: input.sourceName ? String(input.sourceName).slice(0, 100) : null,
@@ -115,7 +124,7 @@ export class BroadcastService {
         `sip_target_id=${target.id}`,
       ].join(",");
       const dialString = `{${variables}}user/${target.extension}@${this.domain}`;
-      const result = await this.esl.execute(`originate ${dialString} &playback(${audio})`, { background: true });
+      const result = await this.esl.execute(`originate ${dialString} &${playApplication(playMode)}(${audio})`, { background: true });
       this.store.updateTarget(broadcast.id, target.id, (storedTarget) => {
         storedTarget.state = "QUEUED";
         storedTarget.channelUuid = channelUuid;

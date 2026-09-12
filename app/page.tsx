@@ -40,6 +40,7 @@ type BackendBroadcast = {
   finishedAt?: string | null;
   audio?: string;
   volume?: number;
+  playMode?: "ONCE" | "LOOP" | "SHUFFLE";
   sourceType?: "FILE" | "PLAYLIST" | "MIXED";
   sourceId?: string | null;
   sourceName?: string | null;
@@ -90,11 +91,22 @@ type LiveTerminal = {
 //      这样在 GUI 里改端口无需重新构建前端；
 //   2. 构建期注入（VITE_API_PORT）——便携版打包时可烘焙默认值；
 //   3. 兜底 3001。
-const runtimeConfig: { apiPort?: string } | undefined =
-  (globalThis as { __SIP_RUNTIME__?: { apiPort?: string } }).__SIP_RUNTIME__;
+const runtimeConfig: { apiPort?: string; version?: string } | undefined =
+  (globalThis as { __SIP_RUNTIME__?: { apiPort?: string; version?: string } }).__SIP_RUNTIME__;
 const broadcastApiPort =
   runtimeConfig?.apiPort || (import.meta.env?.VITE_API_PORT as string | undefined) || "3001";
 const broadcastApiBase = `http://${typeof window === "undefined" ? "127.0.0.1" : window.location.hostname}:${broadcastApiPort}/api/v1`;
+
+// 版本号（形如 0.1.0+20260912.1004）由启动器运行时注入；直接以浏览器打开时为「开发模式」。
+const appVersion = runtimeConfig?.version || (import.meta.env?.VITE_APP_VERSION as string | undefined) || "";
+function formatAppVersion(version: string): string {
+  if (!version) return "开发模式";
+  const [base, stamp] = version.split("+");
+  if (!stamp || stamp === "dev") return `${base} · 开发模式`;
+  const match = /^(\d{4})(\d{2})(\d{2})\.(\d{2})(\d{2})$/.exec(stamp);
+  if (!match) return version;
+  return `${base} · ${match[1]}-${match[2]}-${match[3]} ${match[4]}:${match[5]}`;
+}
 
 const failureCauseMeta: Record<string, { label: string; description: string }> = {
   RECOVERY_ON_TIMER_EXPIRE: { label: "终端响应超时", description: "呼叫未在规定时间内建立" },
@@ -374,6 +386,11 @@ function Overview({ go }: { go: (page: PageKey) => void }) {
 }
 
 function Realtime({ onStarted, organizationName }: { onStarted: (broadcast: BackendBroadcast) => void; organizationName: string }) {
+  const playModeOptions = [
+    { key: "ONCE", label: "单次播放", icon: "▶", hint: "按队列顺序播放一遍后结束" },
+    { key: "LOOP", label: "循环播放", icon: "∞", hint: "循环播放直到手动停止" },
+    { key: "SHUFFLE", label: "随机播放", icon: "⇄", hint: "打乱队列顺序播放一遍" },
+  ] as const;
   const [targetMode, setTargetMode] = useState<"zones" | "terminals">("zones");
   const [sourceMode, setSourceMode] = useState<"playlists" | "files">("playlists");
   const [zones, setZones] = useState<Array<{ id: string; name: string; terminalIds: string[] }>>([]);
@@ -386,12 +403,16 @@ function Realtime({ onStarted, organizationName }: { onStarted: (broadcast: Back
   const [playingFile, setPlayingFile] = useState<MediaFile | null>(null);
   const previewAudioRef = useRef<HTMLAudioElement>(null);
   const [volume, setVolume] = useState(75);
+  const [playMode, setPlayMode] = useState<"ONCE" | "LOOP" | "SHUFFLE">("ONCE");
   const [confirm, setConfirm] = useState(false);
   const [search, setSearch] = useState("");
   const [audioSearch, setAudioSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState("");
+  // 必须在 playMode 声明之后计算：此前置于 state 之前，因回调内引用触发 TDZ
+  // （ReferenceError: Cannot access 'playMode' before initialization），导致整页崩溃。
+  const playModeLabel = playModeOptions.find((option) => option.key === playMode)?.label ?? "单次播放";
 
   const refresh = useCallback(async () => {
     try {
@@ -468,6 +489,7 @@ function Realtime({ onStarted, organizationName }: { onStarted: (broadcast: Back
           sources: selectedSources,
           callerId: "9999",
           volume,
+          playMode,
         }),
       });
       setConfirm(false);
@@ -487,7 +509,7 @@ function Realtime({ onStarted, organizationName }: { onStarted: (broadcast: Back
       <div className="steps" aria-label="广播配置步骤">
         <div className="step active"><span>1</span><div><b>广播目标</b><small>{targetMode === "zones" ? `${selectedZones.length} 个分区` : `${selectedTerminals.length} 台终端`}</small></div></div><i />
         <div className={`step ${sourceReady ? "active" : ""}`}><span>2</span><div><b>播放内容</b><small>{selectedSourceRows.length ? `${selectedSourceRows.length} 项 · ${selectedAudioCount} 个音频` : "未选择"}</small></div></div><i />
-        <div className={`step ${dispatchTargets.length && sourceReady ? "active" : ""}`}><span>3</span><div><b>执行策略</b><small>音量 {volume}%</small></div></div>
+        <div className={`step ${dispatchTargets.length && sourceReady ? "active" : ""}`}><span>3</span><div><b>执行策略</b><small>{playModeLabel} · 音量 {volume}%</small></div></div>
       </div>
 
       <div className="broadcast-builder">
@@ -511,6 +533,12 @@ function Realtime({ onStarted, organizationName }: { onStarted: (broadcast: Back
           {sourceMode === "playlists" && <div className="audio-list">{visiblePlaylists.map((playlist) => { const selected = sourceSelected("PLAYLIST", playlist.id); return <button className={`audio-row ${selected ? "selected" : ""}`} disabled={playlist.files.length === 0} key={playlist.id} onClick={() => toggleSource("PLAYLIST", playlist.id)}><span className="source-check">{selected ? "✓" : ""}</span><span className="play-circle">≡</span><span><b>{playlist.name}</b><small>{playlist.files.length ? `${playlist.files.length} 个音频 · ${playlist.files.map((file) => file.format).join(" / ")}` : "空播放列表，不可广播"}</small></span>{selected && <em>第 {sourceOrder("PLAYLIST", playlist.id)} 项</em>}</button>; })}{!loading && visiblePlaylists.length === 0 && <div className="target-list-empty">媒体库没有播放列表，请先创建并添加音频。</div>}</div>}
           {sourceMode === "files" && <div className="audio-list">{visibleFiles.map((file) => { const selected = sourceSelected("FILE", file.id); const playing = playingFile?.id === file.id; return <div className={`audio-row audio-file-row ${selected ? "selected" : ""} ${playing ? "is-playing" : ""}`} key={file.id}><button className="audio-select-area" onClick={() => toggleSource("FILE", file.id)}><span className="source-check">{selected ? "✓" : ""}</span><span className="play-circle">♪</span><span><b>{file.originalName}</b><small>{file.format} · {(file.size / 1024).toFixed(0)} KB</small></span>{selected && <em>第 {sourceOrder("FILE", file.id)} 项</em>}</button><div className="inline-preview-actions"><button className={playing ? "active" : ""} onClick={() => playPreview(file)} aria-label={`播放 ${file.originalName}`}><span>▶</span>播放</button><button disabled={!playing} onClick={stopPreview} aria-label={`停止 ${file.originalName}`}><span>■</span>停止</button></div></div>; })}{!loading && visibleFiles.length === 0 && <div className="target-list-empty">媒体库没有可用 WAV/MP3，请先上传音频。</div>}<audio ref={previewAudioRef} className="inline-preview-audio" onEnded={() => setPlayingFile(null)} /></div>}
           {selectedSourceRows.length > 0 && <div className={`strategy-note source-queue-note ${selectedAudioCount > 100 ? "has-error" : ""}`}><span>≡</span><p><b>播放队列：{selectedSourceRows.length} 项，共 {selectedAudioCount} 个音频</b><small>{selectedSourceRows.map((source, index) => `${index + 1}. ${source.name}`).join(" → ")}</small>{selectedAudioCount > 100 && <em>展开后的音频不能超过 100 个，请减少选择。</em>}</p></div>}
+          <div className="play-mode-block">
+            <div className="play-mode-head"><span>播放模式</span><small>{playModeOptions.find((option) => option.key === playMode)?.hint}</small></div>
+            <div className="play-mode-tabs" role="radiogroup" aria-label="播放模式">
+              {playModeOptions.map((option) => <button type="button" role="radio" aria-checked={playMode === option.key} className={playMode === option.key ? "active" : ""} key={option.key} onClick={() => setPlayMode(option.key)}><span>{option.icon}</span>{option.label}</button>)}
+            </div>
+          </div>
         </section>
 
         <section className="builder-card strategy-card">
@@ -520,7 +548,7 @@ function Realtime({ onStarted, organizationName }: { onStarted: (broadcast: Back
         </section>
       </div>
 
-      {confirm && sourceReady && <div className="modal-backdrop" role="presentation" onMouseDown={() => setConfirm(false)}><div className="modal confirm-modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title" onMouseDown={(event) => event.stopPropagation()}><button className="modal-close" onClick={() => setConfirm(false)}>×</button><div className="confirm-icon">◉</div><h2 id="confirm-title">确认开始广播？</h2><p>系统将呼叫所选在线终端并按队列顺序播放。</p><div className="confirm-facts"><div><span>播放队列</span><b>{selectedSourceRows.length} 项 / {selectedAudioCount} 个音频</b></div><div><span>广播内容</span><b>{selectedSourceName}</b></div><div><span>目标范围</span><b>{targetLabel || "未选择"}</b></div><div><span>覆盖终端</span><b>{dispatchTargets.length} 台在线终端</b></div><div><span>播放音量</span><b>{volume}%</b></div></div><div className="risk-note">确认后将立即开始广播，请核对目标范围和播放顺序。</div>{submitError && <div className="permission-notice">{submitError}</div>}<div className="modal-actions"><button className="button button-secondary" disabled={submitting} onClick={() => setConfirm(false)}>取消</button><button className="button button-primary" disabled={submitting || !dispatchTargets.length} onClick={() => void startBroadcast()}>{submitting ? "正在下发…" : "确认并开始"}</button></div></div></div>}
+      {confirm && sourceReady && <div className="modal-backdrop" role="presentation" onMouseDown={() => setConfirm(false)}><div className="modal confirm-modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title" onMouseDown={(event) => event.stopPropagation()}><button className="modal-close" onClick={() => setConfirm(false)}>×</button><div className="confirm-icon">◉</div><h2 id="confirm-title">确认开始广播？</h2><p>系统将呼叫所选在线终端并按队列顺序播放。</p><div className="confirm-facts"><div><span>播放队列</span><b>{selectedSourceRows.length} 项 / {selectedAudioCount} 个音频</b></div><div><span>广播内容</span><b>{selectedSourceName}</b></div><div><span>播放模式</span><b>{playModeLabel}</b></div><div><span>目标范围</span><b>{targetLabel || "未选择"}</b></div><div><span>覆盖终端</span><b>{dispatchTargets.length} 台在线终端</b></div><div><span>播放音量</span><b>{volume}%</b></div></div><div className="risk-note">确认后将立即开始广播，请核对目标范围、播放模式和播放顺序。</div>{submitError && <div className="permission-notice">{submitError}</div>}<div className="modal-actions"><button className="button button-secondary" disabled={submitting} onClick={() => setConfirm(false)}>取消</button><button className="button button-primary" disabled={submitting || !dispatchTargets.length} onClick={() => void startBroadcast()}>{submitting ? "正在下发…" : "确认并开始"}</button></div></div></div>}
     </div>
   );
 }
@@ -1417,6 +1445,7 @@ export default function Home() {
           {navGroups.map((group) => <div className="nav-group" key={group.label}><div className="nav-group-label">{group.label}</div>{group.items.map((item) => <button key={item.key} className={page === item.key ? "active" : ""} onClick={() => go(item.key)} title={collapsed ? item.label : undefined}><Icon>{item.icon}</Icon><span>{item.label}</span>{item.key === "tasks" && activeTaskCount > 0 && <em>{activeTaskCount}</em>}</button>)}</div>)}
         </nav>
         <div className="system-health"><div><i /><span><b>{systemHealthy ? "通信服务正常" : "通信服务异常"}</b><small>{systemHealthy ? "运行状态已同步" : "请检查服务连接"}</small></span></div><button onClick={() => go("system")}>›</button></div>
+        <div className="version-tag" title={`程序版本 ${appVersion || "开发模式"}`}><span>版本</span><b>{formatAppVersion(appVersion)}</b></div>
         <button className="collapse-button" onClick={() => setCollapsed(!collapsed)} aria-label={collapsed ? "展开侧边栏" : "收起侧边栏"}>{collapsed ? "›" : "‹"}</button>
       </aside>
       <section className="main-area">

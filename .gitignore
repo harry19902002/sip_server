@@ -47,6 +47,9 @@ yarn-error.log*
 __pycache__/
 *.pyc
 
+# generated at package time (version stamp; 每次打包重写，不入库)
+/launcher/_build_info.py
+
 # runtime logs (launcher / services write here at run time)
 /logs/
 

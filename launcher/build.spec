@@ -27,6 +27,8 @@ hiddenimports = [
     "launcher.core.single_instance",
     "launcher.core.state",
     "launcher.core.freeswitch_config",
+    "launcher.version",
+    "launcher._build_info",
     "pystray",
     "pystray._win32",
     "PIL",

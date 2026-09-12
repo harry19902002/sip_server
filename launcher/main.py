@@ -44,6 +44,7 @@ from launcher.core.network import describe_ip, list_adapters  # noqa: E402
 from launcher.core.process import ProcessManager  # noqa: E402
 from launcher.core.single_instance import SingleInstance, focus_existing_window  # noqa: E402
 from launcher.core.state import STATE_LABELS, ServiceState, StatusCenter, StatusSnapshot  # noqa: E402
+from launcher.version import build_date_display, full_version, short_version  # noqa: E402
 
 APP_TITLE = "SIP 广播系统"
 
@@ -95,7 +96,7 @@ class LauncherApp:
 
     def _build_window(self) -> None:
         root = self.root
-        root.title(APP_TITLE)
+        root.title(f"{APP_TITLE} v{short_version()}")
         root.geometry("780x820")
         root.minsize(700, 720)
 
@@ -108,6 +109,7 @@ class LauncherApp:
         style.configure("Muted.TLabel", font=("Microsoft YaHei UI", 9), foreground="#6b7280")
         style.configure("Status.TLabel", font=("Microsoft YaHei UI", 12, "bold"))
         style.configure("Value.TLabel", font=("Consolas", 10))
+        style.configure("Version.TLabel", font=("Consolas", 9), foreground="#6b7280")
         style.configure("TButton", font=("Microsoft YaHei UI", 10), padding=(14, 6))
 
         container = ttk.Frame(root, padding=18)
@@ -116,12 +118,22 @@ class LauncherApp:
         # ---- 顶部：状态 ----
         header = ttk.Frame(container)
         header.pack(fill="x")
+        header.columnconfigure(0, weight=1)
+
+        # 版本号放在右上角，与左侧状态同一行；构建时间便于确认「这份程序是哪次打包的」
+        self.version_label = ttk.Label(
+            header,
+            text=f"版本 {full_version()}\n构建于 {build_date_display()}",
+            style="Version.TLabel",
+            justify="right",
+        )
+        self.version_label.grid(row=0, column=1, rowspan=2, sticky="ne")
 
         self.state_label = ttk.Label(header, text="未启动", style="Status.TLabel")
-        self.state_label.pack(anchor="w")
+        self.state_label.grid(row=0, column=0, sticky="w")
 
         self.detail_label = ttk.Label(header, text="准备就绪", style="Muted.TLabel")
-        self.detail_label.pack(anchor="w", pady=(2, 0))
+        self.detail_label.grid(row=1, column=0, sticky="w", pady=(2, 0))
 
         # 降级提示条：例如未安装 FreeSWITCH 时说明原因与补救方式
         self.warning_label = ttk.Label(
@@ -132,7 +144,7 @@ class LauncherApp:
             wraplength=640,
             justify="left",
         )
-        self.warning_label.pack(anchor="w", pady=(6, 0))
+        self.warning_label.grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
 
         ttk.Separator(container, orient="horizontal").pack(fill="x", pady=14)
 
@@ -545,7 +557,7 @@ class LauncherApp:
             return
         try:
             self.tray_icon.icon = self._make_tray_icon(STATE_COLORS.get(state, "#8b95a5"))
-            self.tray_icon.title = f"{APP_TITLE} · {STATE_LABELS.get(state, '')}"
+            self.tray_icon.title = f"{APP_TITLE} v{short_version()} · {STATE_LABELS.get(state, '')}"
         except Exception:
             pass
 

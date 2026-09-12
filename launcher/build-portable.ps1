@@ -196,6 +196,44 @@ if (Test-Path -LiteralPath $OutputDirectory) {
 }
 New-Item -ItemType Directory -Path (Join-Path $OutputDirectory "data") -Force | Out-Null
 
+# ---------------------------------------------------------------- 2.5 生成版本号
+
+# 版本号 = 基础版本（launcher/version.py 的 BASE_VERSION）+ 构建时间戳 YYYYMMDD.HHMM。
+# 生成 launcher/_build_info.py 供启动器在运行时读取，使 GUI 与安装包能显示本次构建时间。
+#
+# 时间戳必须在「编译启动器」前定稿，且后续步骤（含 -SkipLauncherBuild 的补跑）必须复用它，
+# 否则 exe 里烘焙的版本与安装包名会不一致。因此：
+#   - 正常打包：取当前时间并写入 _build_info.py
+#   - -SkipLauncherBuild（沿用已编译的 exe）：优先沿用 _build_info.py 里已有的时间戳
+Write-Step "生成构建版本号"
+# version.py 是基础版本的唯一来源，这里读取其 BASE_VERSION，避免两处硬编码不一致
+$versionPy = Join-Path $LauncherDir "version.py"
+$BaseVersion = "0.1.0"
+if (Test-Path -LiteralPath $versionPy) {
+    $match = [regex]::Match((Get-Content -LiteralPath $versionPy -Raw), 'BASE_VERSION\s*=\s*"([^"]+)"')
+    if ($match.Success) { $BaseVersion = $match.Groups[1].Value }
+}
+
+$buildInfoPath = Join-Path $LauncherDir "_build_info.py"
+$BuildStamp = Get-Date -Format "yyyyMMdd.HHmm"
+if ($SkipLauncherBuild -and (Test-Path -LiteralPath $buildInfoPath)) {
+    $existing = [regex]::Match((Get-Content -LiteralPath $buildInfoPath -Raw), 'BUILD_STAMP\s*=\s*"([^"]+)"')
+    if ($existing.Success) {
+        $BuildStamp = $existing.Groups[1].Value
+        Write-Host "    沿用已编译 exe 的构建戳 $BuildStamp" -ForegroundColor DarkGray
+    }
+}
+$FullVersion = "$BaseVersion+$BuildStamp"
+$buildInfoContent = @"
+# 本文件由 build-portable.ps1 自动生成，请勿手工编辑。
+# 每次打包时重写，用于让启动器显示「本次构建」的版本与时间。
+BUILD_STAMP = "$BuildStamp"
+BUILD_VERSION = "$FullVersion"
+"@
+# 必须写成无 BOM 的 UTF-8：Python 3 读取含 BOM 的文件会保留 \ufeff 前缀字符
+[System.IO.File]::WriteAllText($buildInfoPath, $buildInfoContent, (New-Object System.Text.UTF8Encoding($false)))
+Write-Ok "版本号 $FullVersion"
+
 # ---------------------------------------------------------------- 3. 构建前端
 
 if (-not $SkipFrontendBuild) {
@@ -529,13 +567,19 @@ if (-not $SkipInstaller) {
     } else {
         $issPath = Join-Path $LauncherDir "installer.iss"
         Write-Host "    编译器: $iscc" -ForegroundColor DarkGray
+        # 安装包版本用点号形式（0.1.0.20260912.1004）：文件名与「程序和功能」都安全可读，
+        # 且同样包含构建日期时间。应用内仍用语义化的 0.1.0+20260912.1004。
+        $installerVersion = "$BaseVersion.$BuildStamp"
         Push-Location $LauncherDir
         try {
-            & $iscc $issPath
+            & $iscc "/DAppVersion=$installerVersion" $issPath
             if ($LASTEXITCODE -eq 0) {
-                $setupExe = Join-Path $ProjectRoot "dist-portable\installer\SIPBroadcast-Setup-0.1.0.exe"
+                $setupExe = Join-Path $ProjectRoot "dist-portable\installer\SIPBroadcast-Setup-$installerVersion.exe"
                 if (Test-Path -LiteralPath $setupExe) {
-                    Write-Ok "已生成安装包 ($([math]::Round((Get-Item $setupExe).Length / 1MB, 1)) MB)"
+                    Write-Ok "已生成安装包 $([math]::Round((Get-Item $setupExe).Length / 1MB, 1)) MB"
+                    Write-Ok "安装包版本 $installerVersion"
+                } else {
+                    Write-Host "    安装包已编译，但未找到 $setupExe" -ForegroundColor Yellow
                 }
             } else {
                 Write-Host "    安装包编译失败（exit $LASTEXITCODE）" -ForegroundColor Yellow

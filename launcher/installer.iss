@@ -14,7 +14,11 @@
 
 #define AppName "SIP 广播系统"
 #define AppNameEn "SIP Broadcast System"
-#define AppVersion "0.1.0"
+; 版本号默认取基础版本；打包时由 build-portable.ps1 通过 ISCC /DAppVersion 覆盖为
+; 完整版本（形如 0.1.0+20260912.1004），使安装包名与「程序和功能」里都能看到构建时间。
+#ifndef AppVersion
+  #define AppVersion "0.1.0"
+#endif
 #define AppPublisher "SIP Broadcast"
 #define AppExeName "SIPBroadcast.exe"
 

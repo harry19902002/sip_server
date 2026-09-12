@@ -117,3 +117,38 @@ test("persists a mixed ordered media queue", async (t) => {
   assert.deepEqual(broadcast.sourceItems, sourceItems);
   assert.match(commands[0], /first\.wav!.*second\.mp3!.*notice\.wav/);
 });
+
+test("defaults to ONCE play mode and uses the playback application", async (t) => {
+  const { directory, commands, service } = fixture();
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const { broadcast } = await service.create({ ...validInput, targets: ["1000"] });
+  assert.equal(broadcast.playMode, "ONCE");
+  assert.match(commands[0], /&playback\(/);
+  assert.doesNotMatch(commands[0], /endless_playback/);
+});
+
+test("uses endless_playback for LOOP mode", async (t) => {
+  const { directory, commands, service } = fixture();
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const audio = "file_string:///var/lib/freeswitch/storage/media/first.wav!/var/lib/freeswitch/storage/media/second.mp3";
+  const { broadcast } = await service.create({ ...validInput, targets: ["1000"], audio, playMode: "LOOP" });
+  assert.equal(broadcast.playMode, "LOOP");
+  assert.match(commands[0], /&endless_playback\(file_string:\/\//);
+});
+
+test("normalizes unknown play modes to ONCE", async (t) => {
+  const { directory, commands, service } = fixture();
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const { broadcast } = await service.create({ ...validInput, targets: ["1000"], playMode: "bogus" });
+  assert.equal(broadcast.playMode, "ONCE");
+  assert.match(commands[0], /&playback\(/);
+});
+
+test("keeps the shuffled order for SHUFFLE mode", async (t) => {
+  const { directory, commands, service } = fixture();
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const audio = "file_string:///var/lib/freeswitch/storage/media/b.wav!/var/lib/freeswitch/storage/media/a.wav";
+  const { broadcast } = await service.create({ ...validInput, targets: ["1000"], audio, playMode: "SHUFFLE" });
+  assert.equal(broadcast.playMode, "SHUFFLE");
+  assert.match(commands[0], /&playback\(file_string:\/\/.*b\.wav!.*a\.wav\)/);
+});
