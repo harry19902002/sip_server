@@ -136,6 +136,30 @@ test("uses endless_playback for LOOP mode", async (t) => {
   assert.match(commands[0], /&endless_playback\(file_string:\/\//);
 });
 
+test("late answer and hangup events do not revive a canceled preset task", async (t) => {
+  const { directory, service } = fixture();
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const { broadcast } = await service.create({ ...validInput, targets: ["1000"], presetId: "preset-1" });
+  await service.cancel(broadcast.id);
+  for (const name of ["CHANNEL_ANSWER", "CHANNEL_HANGUP_COMPLETE"]) service.handleEvent({
+    "Event-Name": name, "Hangup-Cause": "NORMAL_CLEARING", variable_sip_broadcast_id: broadcast.id, variable_sip_target_id: broadcast.targets[0].id,
+  });
+  assert.equal(service.get(broadcast.id).state, "CANCELED");
+  assert.equal(service.get(broadcast.id).targets[0].state, "CANCELED");
+});
+
+test("failed hangup remains cancel-requested and can be retried", async (t) => {
+  const { directory, service } = fixture();
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const { broadcast } = await service.create({ ...validInput, targets: ["1000"] });
+  const original = service.esl.execute;
+  service.esl.execute = async () => { throw new Error("ESL connection refused"); };
+  await assert.rejects(service.cancel(broadcast.id), /connection refused/);
+  assert.equal(service.get(broadcast.id).state, "CANCELED_REQUESTED");
+  service.esl.execute = original;
+  assert.equal((await service.cancel(broadcast.id)).state, "CANCELED");
+});
+
 test("normalizes unknown play modes to ONCE", async (t) => {
   const { directory, commands, service } = fixture();
   t.after(() => rmSync(directory, { recursive: true, force: true }));

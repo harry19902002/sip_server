@@ -26,6 +26,7 @@ export class SipAccountStore {
     const password = String(input.password ?? "");
     const displayNumber = String(input.displayNumber ?? account).trim() || account;
     const path = this.file(account);
+    if (/^88\d{4}$/.test(account) || /^88\d{4}$/.test(displayNumber)) throw problem("880000-889999 为预设广播保留号码，请使用其他 SIP 账号和显示号码", 409);
     if (!name || name.length > 80) throw problem("account name must contain 1-80 characters");
     if (password.length < 6 || password.length > 128) throw problem("password must contain 6-128 characters");
     if (!/^[A-Za-z0-9_.-]{2,32}$/.test(displayNumber)) throw problem("display number contains unsupported characters");

@@ -17,6 +17,11 @@ sed "s|__ESL_PASSWORD__|${rendered_esl_password}|g" \
   > /etc/freeswitch/autoload_configs/event_socket.conf.xml
 
 vars_file=/etc/freeswitch/vars.xml
+# Put preset numbers before the vanilla 88* eavesdrop route.
+default_dialplan=/etc/freeswitch/dialplan/default.xml
+if ! grep -q 'data="default/00_preset_broadcast.xml"' "$default_dialplan"; then
+  sed -i '/<context name="default">/a\    <X-PRE-PROCESS cmd="include" data="default/00_preset_broadcast.xml"/>' "$default_dialplan"
+fi
 sed -i \
   -e "s|data=\"domain=.*\"|data=\"domain=$(escape_sed "$FREESWITCH_DOMAIN")\"|" \
   -e "s|data=\"default_password=.*\"|data=\"default_password=$(escape_sed "$SIP_DEFAULT_PASSWORD")\"|" \

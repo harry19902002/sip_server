@@ -333,6 +333,18 @@ class ProcessManager:
             return False
 
         data = self.paths.data
+        # Write SIP accounts into the directory actually read by FreeSWITCH.
+        # Preserve accounts created by older portable builds on first startup.
+        fs_runtime = self.paths.freeswitch_runtime or Path(self.config.freeweb_runtime_dir)
+        sip_directory = fs_runtime / "conf" / "directory" / "default"
+        sip_directory.mkdir(parents=True, exist_ok=True)
+        legacy_directory = data / "sip-directory"
+        if legacy_directory.is_dir():
+            import shutil
+            for account_file in legacy_directory.glob("*.xml"):
+                destination = sip_directory / account_file.name
+                if not destination.exists():
+                    shutil.copyfile(account_file, destination)
         env = self._base_env()
         env.update(
             {
@@ -347,7 +359,7 @@ class ProcessManager:
                 "BROADCAST_DATA_FILE": str(data / "broadcasts.json"),
                 "MEDIA_DATA_FILE": str(data / "media.json"),
                 "MEDIA_DIRECTORY": str(data / "media"),
-                "SIP_DIRECTORY": str(data / "sip-directory"),
+                "SIP_DIRECTORY": str(sip_directory),
                 "TERMINAL_METADATA_FILE": str(data / "terminals.json"),
                 "ZONE_DATA_FILE": str(data / "zones.json"),
                 "SCHEDULE_DATA_FILE": str(data / "schedules.json"),

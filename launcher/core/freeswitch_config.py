@@ -51,6 +51,21 @@ class FreeswitchConfigurator:
         self._patch_switch_conf(conf)
         self._patch_acl_conf(conf)
         self._patch_modules(conf)
+        preset_template = self.template_root / "preset-broadcast.xml"
+        if preset_template.is_file():
+            preset_target = conf / "dialplan" / "default" / "00_preset_broadcast.xml"
+            preset_target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(preset_template, preset_target)
+            # Vanilla FreeSWITCH reserves 88* for eavesdrop. Route our service
+            # numbers first, before the sample dialplan can consume them.
+            default_plan = conf / "dialplan" / "default.xml"
+            if default_plan.is_file():
+                text = default_plan.read_text(encoding="utf-8")
+                include = '<X-PRE-PROCESS cmd="include" data="default/00_preset_broadcast.xml"/>'
+                if include not in text:
+                    text = text.replace('<context name="default">', '<context name="default">\n    ' + include, 1)
+                    default_plan.write_text(text, encoding="utf-8")
+            self.log("[config] 已配置预设广播 SIP 呼叫路由")
         self._ensure_directories()
 
     # ---------------- 各配置文件 ----------------

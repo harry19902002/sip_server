@@ -1,5 +1,48 @@
 @import "tailwindcss";
 
+.preset-explainer { display: flex; gap: 16px; align-items: center; padding: 20px 24px; border: 1px solid var(--line); border-radius: 12px; background: var(--blue-soft); }
+.preset-phone-icon { color: var(--blue); font-size: 28px; }
+.preset-explainer b { font-size: 14px; }
+.preset-explainer p { margin: 6px 0 0; font-size: 12px; line-height: 1.8; color: var(--text-2); }
+.preset-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 24px 0 16px; color: var(--text-2); font-size: 12px; }
+.preset-toolbar b { color: var(--text); font-size: 16px; }
+.preset-toolbar span { margin: 0 8px; }
+.preset-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 20px; }
+.preset-card { padding: 24px; display: flex; flex-direction: column; }
+.preset-card.is-playing { border-color: var(--blue); }
+.preset-card-heading { display: flex; align-items: center; gap: 12px; }
+.preset-card-icon { display: grid; place-items: center; width: 44px; height: 44px; background: var(--blue-soft); color: var(--blue); border-radius: 12px; font-size: 23px; }
+.preset-card-heading h2 { margin: 0 0 6px; font-size: 16px; overflow-wrap: anywhere; }
+.preset-number { display: flex; flex-direction: column; padding: 18px; margin: 20px 0; border: 1px solid var(--line); background: var(--canvas); border-radius: 9px; }
+.preset-number > span { color: var(--text-2); font-size: 11px; }
+.preset-number strong { font: 700 28px/1.6 Consolas, monospace; color: var(--blue); letter-spacing: .06em; }
+.preset-number small { color: var(--text-3); font-size: 11px; }
+.preset-details { display: grid; gap: 16px; margin: 0 0 22px; }
+.preset-details > div { display: grid; grid-template-columns: 65px 1fr; gap: 12px; font-size: 12px; line-height: 1.7; }
+.preset-details dt { color: var(--text-3); }
+.preset-details dd { margin: 0; overflow-wrap: anywhere; }
+.preset-details dd small { display: block; font-size: 11px; color: var(--text-3); }
+.preset-details dd span { color: var(--text-3); margin: 0 5px; }
+.preset-card-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 18px; margin-top: auto; border-top: 1px solid var(--line); }
+.preset-card-actions > div { display: flex; gap: 16px; }
+.preset-card-actions .button { font-size: 12px; }
+.preset-warning { margin: 0 0 16px; color: var(--orange); font-size: 12px; line-height: 1.7; }
+.preset-editor { max-height: 90vh; overflow-y: auto; }
+.preset-editor .schedule-form > .wide { grid-column: 1 / -1; }
+.preset-fieldset { margin: 0; padding: 0; border: 0; min-width: 0; }
+.preset-fieldset legend { margin-bottom: 12px; font-size: 12px; font-weight: 700; }
+.preset-fieldset > p { color: var(--text-3); font-size: 11px; line-height: 1.7; margin: 0 0 12px; }
+.preset-source-picker { display: grid; gap: 0; max-height: 190px; overflow-y: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--canvas); }
+.schedule-form .preset-source-picker label { display: flex; align-items: center; gap: 10px; padding: 12px; border-bottom: 1px solid var(--line); font-size: 12px; }
+.schedule-form .preset-source-picker input { width: 16px; height: 16px; flex-shrink: 0; accent-color: var(--blue); }
+.preset-source-picker small { color: var(--text-3); margin-left: 6px; }
+.preset-source-order { padding: 0; margin: 12px 0 0; list-style: none; display: grid; gap: 8px; }
+.preset-source-order li { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 8px 12px; background: var(--blue-soft); border-radius: 6px; font-size: 12px; }
+.preset-source-order li > span { overflow-wrap: anywhere; }
+.preset-source-order li > div { display: flex; gap: 6px; flex-shrink: 0; }
+.preset-source-order button { background: var(--surface); border: 1px solid var(--line); border-radius: 4px; width: 28px; height: 26px; cursor: pointer; }
+@media (max-width: 720px) { .preset-toolbar { align-items: stretch; flex-direction: column; } .preset-grid { grid-template-columns: 1fr; } .preset-card { padding: 18px; } }
+
 :root {
   color-scheme: light;
   --navy: #0d223d;

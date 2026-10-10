@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { createHmac, randomInt, randomUUID, timingSafeEqual } from "node:crypto";
-import { createReadStream, statSync } from "node:fs";
+import { createReadStream, existsSync, statSync } from "node:fs";
 import { EslClient, EslEventSubscriber } from "./lib/esl-client.mjs";
 import { BroadcastStore } from "./lib/broadcast-store.mjs";
 import { BroadcastService } from "./lib/broadcast-service.mjs";
@@ -13,6 +13,9 @@ import { ZoneStore } from "./lib/zone-store.mjs";
 import { ScheduleStore } from "./lib/schedule-store.mjs";
 import { ScheduleService } from "./lib/schedule-service.mjs";
 import { SystemStore } from "./lib/system-store.mjs";
+import { dirname, join } from "node:path";
+import { PresetStore } from "./lib/preset-store.mjs";
+import { PresetService } from "./lib/preset-service.mjs";
 
 const config = {
   port: Number(process.env.PORT ?? 3001),
@@ -63,6 +66,9 @@ const sipAccounts = new SipAccountStore(config.sipDirectory);
 const terminalMetadata = new TerminalMetadataStore(config.terminalMetadataFile);
 const zones = new ZoneStore(config.zoneDataFile);
 const schedules = new ScheduleService({ store: new ScheduleStore(config.scheduleDataFile), media, zones, broadcasts });
+const presets = new PresetService({ store: new PresetStore(process.env.PRESET_DATA_FILE ?? join(dirname(config.dataFile), "presets.json"), {
+  numberAvailable: (number) => !existsSync(join(config.sipDirectory, `${number}.xml`)),
+}), media, zones, broadcasts, esl });
 const system = new SystemStore(config.systemDataFile);
 system.ensureBootstrapAdmin({ username: config.systemAdminUsername, name: "系统管理员", password: config.systemAdminPassword });
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -368,6 +374,26 @@ async function route(request, response) {
     return json(response, 200, { items, count: items.length, requestId });
   }
 
+  if (request.method === "GET" && url.pathname === "/api/v1/presets") {
+    const items = presets.list();
+    return json(response, 200, { items, count: items.length, requestId });
+  }
+  if (request.method === "POST" && url.pathname === "/api/v1/presets") {
+    return json(response, 201, { preset: presets.create(await readJson(request)), requestId });
+  }
+  const presetMatch = url.pathname.match(/^\/api\/v1\/presets\/([^/]+)$/);
+  if (request.method === "GET" && presetMatch) {
+    const preset = presets.get(presetMatch[1]);
+    return preset ? json(response, 200, { preset, requestId }) : json(response, 404, { error: "not_found", requestId });
+  }
+  if (request.method === "PATCH" && presetMatch) return json(response, 200, { preset: presets.update(presetMatch[1], await readJson(request)), requestId });
+  if (request.method === "DELETE" && presetMatch) return json(response, 200, { preset: presets.delete(presetMatch[1]), requestId });
+  const presetAction = url.pathname.match(/^\/api\/v1\/presets\/([^/]+)\/(play|stop)$/);
+  if (request.method === "POST" && presetAction) {
+    const preset = presetAction[2] === "play" ? await presets.start(presetAction[1]) : await presets.stop(presetAction[1]);
+    return json(response, 200, { preset, requestId });
+  }
+
   if (request.method === "GET" && url.pathname === "/api/v1/schedules") {
     const items = schedules.list();
     return json(response, 200, { items, count: items.length, requestId });
@@ -437,6 +463,9 @@ async function route(request, response) {
 
   if (request.method === "POST" && url.pathname === "/api/v1/broadcasts") {
     const input = await readJson(request);
+    // Only PresetService may associate a task with a SIP control channel.
+    delete input.presetId;
+    delete input.controllerUuid;
     // 播放模式：单次播放 / 循环播放 / 随机播放。缺省为单次，保持向后兼容。
     const playMode = input.playMode ? String(input.playMode).toUpperCase() : "ONCE";
     if (!["ONCE", "LOOP", "SHUFFLE"].includes(playMode)) {
@@ -525,7 +554,10 @@ const server = createServer((request, response) => {
 server.listen(config.port, "0.0.0.0", () => {
   console.log(`FreeSWITCH API listening on port ${config.port}`);
   eventSubscriber.start(
-    (event) => broadcasts.handleEvent(event),
+    (event) => {
+      broadcasts.handleEvent(event);
+      presets.handleEvent(event).catch((error) => console.error(JSON.stringify({ component: "preset-events", error: error.message })));
+    },
     (state) => console.log(JSON.stringify({ component: "esl-events", ...state })),
   );
 });
@@ -535,9 +567,15 @@ const scheduleTimer = setInterval(() => {
 }, 1000);
 scheduleTimer.unref();
 
+const presetTimer = setInterval(() => {
+  presets.reconcile().catch((error) => console.error(JSON.stringify({ component: "preset-runner", error: error.message })));
+}, 3000);
+presetTimer.unref();
+
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, () => {
     clearInterval(scheduleTimer);
+    clearInterval(presetTimer);
     eventSubscriber.stop();
     server.close(() => process.exit(0));
   });

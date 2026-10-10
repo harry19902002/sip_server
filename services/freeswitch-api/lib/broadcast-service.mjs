@@ -93,7 +93,9 @@ export class BroadcastService {
     const broadcast = this.store.create({
       id: randomUUID(),
       name,
-      type: "REALTIME",
+      type: input.presetId ? "PRESET" : "REALTIME",
+      presetId: input.presetId ?? null,
+      controllerUuid: input.controllerUuid ?? null,
       state: "DISPATCHING",
       audio,
       callerId,
@@ -124,10 +126,12 @@ export class BroadcastService {
         `sip_target_id=${target.id}`,
       ].join(",");
       const dialString = `{${variables}}user/${target.extension}@${this.domain}`;
+      this.store.updateTarget(broadcast.id, target.id, (storedTarget) => {
+        storedTarget.channelUuid = channelUuid;
+        storedTarget.state = "QUEUED";
+      });
       const result = await this.esl.execute(`originate ${dialString} &${playApplication(playMode)}(${audio})`, { background: true });
       this.store.updateTarget(broadcast.id, target.id, (storedTarget) => {
-        storedTarget.state = "QUEUED";
-        storedTarget.channelUuid = channelUuid;
         storedTarget.jobUuid = result.jobUuid;
       });
       return target.id;
@@ -151,9 +155,11 @@ export class BroadcastService {
     if (!broadcast) throw problem("broadcast not found", 404);
     if (["SUCCEEDED", "PARTIAL_FAILED", "FAILED", "CANCELED"].includes(broadcast.state)) return broadcast;
     this.store.update(id, (item) => { item.state = "CANCELED_REQUESTED"; });
-    await Promise.allSettled(broadcast.targets.filter((target) => target.channelUuid && !terminalTargetStates.has(target.state)).map((target) => (
+    const results = await Promise.allSettled(broadcast.targets.filter((target) => target.channelUuid && !terminalTargetStates.has(target.state)).map((target) => (
       this.esl.execute(`uuid_kill ${target.channelUuid} NORMAL_CLEARING`)
     )));
+    const failed = results.find((result) => result.status === "rejected" && !/no such channel|invalid uuid/i.test(result.reason?.message ?? ""));
+    if (failed) throw failed.reason; // Keep CANCELED_REQUESTED so the caller can retry.
     return this.store.update(id, (item) => {
       item.targets.forEach((target) => {
         if (!terminalTargetStates.has(target.state)) {
@@ -177,6 +183,7 @@ export class BroadcastService {
       return;
     }
     if (!broadcastId || !targetId || !this.store.get(broadcastId)) return;
+    if (["CANCELED", "CANCELED_REQUESTED"].includes(this.store.get(broadcastId).state)) return;
     if (eventName === "CHANNEL_ANSWER") {
       this.store.updateTarget(broadcastId, targetId, (target, broadcast) => {
         target.state = "ANSWERED";
@@ -197,6 +204,7 @@ export class BroadcastService {
 
   failTarget(broadcastId, targetId, cause) {
     this.store.updateTarget(broadcastId, targetId, (target, broadcast) => {
+      if (["CANCELED", "CANCELED_REQUESTED"].includes(broadcast.state)) return;
       target.state = "FAILED";
       target.failureCause = cause;
       target.finishedAt = new Date().toISOString();

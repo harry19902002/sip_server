@@ -1,0 +1,12 @@
+<include>
+  <!-- Reserved service numbers. The API owns the caller's parked channel and
+       cancels all target channels when this caller hangs up. -->
+  <extension name="preset-broadcast">
+    <condition field="destination_number" expression="^(88[0-9]{4})$">
+      <action application="set" data="sip_preset_number=$1"/>
+      <action application="set" data="park_timeout=86400:ALLOTTED_TIMEOUT"/>
+      <action application="answer"/>
+      <action application="park"/>
+    </condition>
+  </extension>
+</include>

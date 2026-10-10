@@ -5,10 +5,12 @@
 /* eslint-disable jsx-a11y/media-has-caption, jsx-a11y/no-noninteractive-element-interactions, jsx-a11y/no-static-element-interactions, jsx-a11y/no-autofocus */
 
 import { type CSSProperties, type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import PresetBroadcasts from "./preset-broadcasts";
 
 type PageKey =
   | "overview"
   | "realtime"
+  | "presets"
   | "schedule"
   | "tasks"
   | "content"
@@ -33,7 +35,7 @@ type BackendBroadcastTarget = {
 type BackendBroadcast = {
   id: string;
   name: string;
-  type: "REALTIME";
+  type: "REALTIME" | "PRESET";
   state: string;
   createdAt: string;
   updatedAt?: string;
@@ -153,6 +155,7 @@ const navGroups: Array<{ label: string; items: Array<{ key: PageKey; label: stri
     label: "广播业务",
     items: [
       { key: "realtime", label: "实时广播", icon: "◉" },
+      { key: "presets", label: "预设广播", icon: "▣" },
       { key: "schedule", label: "定时计划", icon: "◷" },
       { key: "tasks", label: "任务中心", icon: "≡" },
       { key: "content", label: "媒体库", icon: "♪" },
@@ -1127,7 +1130,7 @@ function Tasks() {
   const stateLabel = (broadcast: BackendBroadcast) => ({ DISPATCHING: "下发中", RUNNING: broadcast.targets.some((target) => target.answeredAt) ? "播放中" : "呼叫中", SUCCEEDED: "成功", PARTIAL_FAILED: "部分成功", FAILED: "失败", CANCELED_REQUESTED: "停止中", CANCELED: "已停止" } as Record<string, string>)[broadcast.state] ?? broadcast.state;
   const liveRows = broadcasts.map((broadcast) => {
     const completed = broadcast.targets.filter((target) => ["SUCCEEDED", "FAILED", "CANCELED"].includes(target.state)).length;
-    return { id: broadcast.id, name: broadcast.name, type: broadcast.name.startsWith("定时广播 ·") ? "定时广播" : "实时广播", target: `${broadcast.targets.length} 台终端`, progress: `${completed} / ${broadcast.targets.length}`, status: stateLabel(broadcast), time: new Date(broadcast.createdAt).toLocaleString("zh-CN", { hour12: false }), state: broadcast.state };
+    return { id: broadcast.id, name: broadcast.name, type: broadcast.type === "PRESET" ? "预设广播" : broadcast.name.startsWith("定时广播 ·") ? "定时广播" : "实时广播", target: `${broadcast.targets.length} 台终端`, progress: `${completed} / ${broadcast.targets.length}`, status: stateLabel(broadcast), time: new Date(broadcast.createdAt).toLocaleString("zh-CN", { hour12: false }), state: broadcast.state };
   });
   const activeStates = new Set(["DISPATCHING", "RUNNING", "CANCELED_REQUESTED"]);
   const failedStates = new Set(["FAILED", "PARTIAL_FAILED"]);
@@ -1457,6 +1460,7 @@ export default function Home() {
         {page === "overview" && <Overview go={go} />}
         {page === "realtime" && <Realtime organizationName={organizationName} onStarted={(broadcast) => { notify(`广播任务已创建，正在向 ${broadcast.targets.length} 台终端下发`); go("tasks"); }} />}
         {page === "schedule" && <Schedule notify={notify} />}
+        {page === "presets" && <PresetBroadcasts request={apiRequest} notify={notify} />}
         {page === "terminals" && <Terminals notify={notify} />}
         {page === "resources" && <Resources role={role} organizationName={organizationName} onOrganizationSave={saveOrganizationName} notify={notify} />}
         {page === "tasks" && <Tasks />}
@@ -1464,7 +1468,7 @@ export default function Home() {
         {page === "sipAccounts" && <SipAccounts notify={notify} />}
         {page === "permissions" && <Permissions role={role} notify={notify} />}
         {page === "system" && <SystemConfig organizationName={organizationName} theme={theme} onSave={setOrganizationName} onThemeChange={setTheme} notify={notify} />}
-        {!(["overview", "realtime", "schedule", "terminals", "resources", "tasks", "content", "sipAccounts", "permissions", "system"] as PageKey[]).includes(page) && <PlaceholderPage page={page} />}
+        {!(["overview", "realtime", "presets", "schedule", "terminals", "resources", "tasks", "content", "sipAccounts", "permissions", "system"] as PageKey[]).includes(page) && <PlaceholderPage page={page} />}
       </section>
 
       {toast && <div className="toast"><span>✓</span><div><b>操作成功</b><p>{toast}</p></div><button onClick={() => setToast("")}>×</button></div>}

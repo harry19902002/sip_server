@@ -181,7 +181,7 @@ export class EslEventSubscriber {
       const authentication = await nextFrame();
       if (!authentication.headers["reply-text"]?.startsWith("+OK")) throw new Error("FreeSWITCH ESL event authentication failed");
       authenticated = true;
-      socket.write("event json BACKGROUND_JOB CHANNEL_ANSWER CHANNEL_HANGUP_COMPLETE CUSTOM sofia::register sofia::unregister\n\n");
+      socket.write("event json BACKGROUND_JOB CHANNEL_ANSWER CHANNEL_PARK CHANNEL_HANGUP_COMPLETE CUSTOM sofia::register sofia::unregister\n\n");
       const subscription = await nextFrame();
       if (!subscription.headers["reply-text"]?.startsWith("+OK")) throw new Error("FreeSWITCH rejected ESL event subscription");
       this.onState({ connected: true });

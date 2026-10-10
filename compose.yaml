@@ -19,6 +19,7 @@ services:
       - ./infra/freeswitch/config/event_socket.conf.xml.template:/opt/sip-server/event_socket.conf.xml.template:ro
       - ./infra/freeswitch/config/switch.conf.xml:/etc/freeswitch/autoload_configs/switch.conf.xml:ro
       - ./infra/freeswitch/config/acl.conf.xml:/etc/freeswitch/autoload_configs/acl.conf.xml:ro
+      - ./infra/freeswitch/config/preset-broadcast.xml:/etc/freeswitch/dialplan/default/00_preset_broadcast.xml:ro
       - freeswitch-recordings:/var/lib/freeswitch/recordings
       - freeswitch-storage:/var/lib/freeswitch/storage
       - media-data:/var/lib/freeswitch/storage/media:ro
