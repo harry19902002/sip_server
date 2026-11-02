@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 function problem(message, status = 400) {
@@ -18,6 +18,11 @@ export class SipAccountStore {
   file(account) {
     if (!/^[A-Za-z0-9_.-]{2,32}$/.test(account)) throw problem("SIP account must contain 2-32 letters, numbers, dots, underscores, or hyphens");
     return join(this.directory, `${account}.xml`);
+  }
+
+  /** 账号文件是否已存在。预置逻辑靠它做幂等，避免覆盖运维改过的账号。 */
+  exists(account) {
+    return existsSync(this.file(account));
   }
 
   prepare(input) {

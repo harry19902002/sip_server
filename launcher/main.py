@@ -323,7 +323,27 @@ class LauncherApp:
 
         if virtual_hidden > 0:
             text += f"已隐藏 {virtual_hidden} 块虚拟网卡（代理 TUN 等，选择后会导致 SIP 终端注册不上）。"
+
+        # 时钟经代理同步会增加 FreeSWITCH 因时钟跳变退出的风险，这里提前给出提示
+        ntp_warning = self._ntp_warning()
+        if ntp_warning:
+            text += "\n" + ntp_warning
         self.adapter_hint.configure(text=text)
+
+    def _ntp_warning(self) -> str:
+        """检测系统时间同步是否走了代理虚拟网卡，返回提示文案（无问题则空串）。"""
+        try:
+            from .network import ntp_source_is_proxied
+
+            proxied, source = ntp_source_is_proxied()
+            if proxied:
+                return (
+                    f"⚠ 时间同步源为 {source}（代理虚拟网卡网段），时钟跳变可能导致"
+                    f"语音引擎退出。可运行 scripts\\fix-ntp-proxy.ps1（管理员）修复。"
+                )
+        except Exception:  # noqa: BLE001
+            pass
+        return ""
 
     def _on_adapter_selected(self) -> None:
         label = self.adapter_combo.get()

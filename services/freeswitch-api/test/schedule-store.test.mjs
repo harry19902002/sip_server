@@ -57,3 +57,132 @@ test("dispatches a due schedule through the broadcast service", async (t) => {
   assert.equal(store.get(plan.id).lastBroadcastId, "broadcast-1");
   assert.equal(store.get(plan.id).enabled, false);
 });
+
+// ---------------------------------------------------------------- 播放模式
+
+test("defaults schedules to ONCE play mode with no duration", () => {
+  const { directory, file } = fixture();
+  const store = new ScheduleStore(file, { clock: () => new Date("2026-08-30T00:00:00.000Z") });
+  const plan = store.create(input);
+  assert.equal(plan.playMode, "ONCE");
+  assert.equal(plan.durationMinutes, 0);
+});
+
+test("accepts LOOP/SHUFFLE with a valid duration and rejects invalid ones", () => {
+  const { directory, file } = fixture();
+  const store = new ScheduleStore(file, { clock: () => new Date("2026-08-30T00:00:00.000Z") });
+
+  const looped = store.create({ ...input, playMode: "LOOP", durationMinutes: 30 });
+  assert.equal(looped.playMode, "LOOP");
+  assert.equal(looped.durationMinutes, 30);
+
+  // 0 表示一直播放，是合法值
+  const endless = store.create({ ...input, playMode: "SHUFFLE", durationMinutes: 0 });
+  assert.equal(endless.durationMinutes, 0);
+
+  assert.throws(() => store.create({ ...input, playMode: "SHUFFLE", durationMinutes: -1 }), /durationMinutes/);
+  assert.throws(() => store.create({ ...input, playMode: "LOOP", durationMinutes: 1.5 }), /durationMinutes/);
+  assert.throws(() => store.create({ ...input, playMode: "LOOP", durationMinutes: 24 * 60 + 1 }), /durationMinutes/);
+  assert.throws(() => store.create({ ...input, playMode: "BOGUS" }), /playMode/);
+});
+
+test("ignores duration for ONCE mode", () => {
+  const { directory, file } = fixture();
+  const store = new ScheduleStore(file, { clock: () => new Date("2026-08-30T00:00:00.000Z") });
+  // 单次播放按音频自身长度播完即止，时长字段无意义，归一化为 0
+  const plan = store.create({ ...input, playMode: "ONCE", durationMinutes: 45 });
+  assert.equal(plan.durationMinutes, 0);
+});
+
+test("persists multiple ordered play sources", (t) => {
+  const { directory, file } = fixture();
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const store = new ScheduleStore(file, { clock: () => new Date("2026-08-30T00:00:00.000Z") });
+  const sourceItems = [
+    { type: "PLAYLIST", id: "playlist-1" },
+    { type: "FILE", id: "media-2" },
+  ];
+  const plan = store.create({ ...input, mediaFileId: "", sourceItems });
+  assert.deepEqual(plan.sourceItems, sourceItems);
+  // 未提供 mediaFileId 时也应能创建（音源全部由 sourceItems 提供）
+  assert.equal(plan.mediaFileId, "");
+});
+
+test("rejects a schedule without any play source", () => {
+  const { directory, file } = fixture();
+  const store = new ScheduleStore(file, { clock: () => new Date("2026-08-30T00:00:00.000Z") });
+  assert.throws(() => store.create({ ...input, mediaFileId: "" }), /play source/i);
+});
+
+test("expands sources, passes playMode, and schedules an auto-stop for LOOP", async (t) => {
+  const { directory, file } = fixture();
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  let now = new Date("2026-08-30T00:00:00.000Z");
+  const store = new ScheduleStore(file, { clock: () => now });
+  const plan = store.create({
+    ...input,
+    date: "2026-08-30",
+    time: "09:00",
+    mediaFileId: "",
+    sourceItems: [{ type: "PLAYLIST", id: "playlist-1" }],
+    playMode: "LOOP",
+    durationMinutes: 20,
+  });
+
+  const calls = [];
+  const canceled = [];
+  const broadcasts = {
+    async create(payload) { calls.push(payload); return { broadcast: { id: "broadcast-9" } }; },
+    get() { return null; },
+    async cancel(id) { canceled.push(id); },
+  };
+  const service = new ScheduleService({
+    store,
+    media: {
+      getFile: () => null,
+      getPlaylist: (id) => id === "playlist-1"
+        ? { id, name: "晨间列表", files: [{ freeswitchPath: "/var/lib/freeswitch/storage/media/a.wav" }, { freeswitchPath: "/var/lib/freeswitch/storage/media/b.wav" }] }
+        : null,
+    },
+    zones: { list: () => [{ id: "zone-1", name: "测试分区", terminalIds: ["8000@sip.local"] }] },
+    broadcasts,
+  });
+
+  now = new Date("2026-08-30T01:00:01.000Z");
+  await service.runDue(now);
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].playMode, "LOOP");
+  assert.equal(calls[0].sourceType, "PLAYLIST");
+  assert.match(calls[0].audio, /file_string:\/\/.*a\.wav!.*b\.wav/);
+
+  // 循环 + 20 分钟 → 应排定了自动停止
+  assert.ok(service.pendingStops.has("broadcast-9"), "expected a pending auto-stop for LOOP");
+  service.cancelPendingStop("broadcast-9");
+  assert.equal(service.pendingStops.size, 0);
+});
+
+test("does not schedule an auto-stop when duration is 0", async (t) => {
+  const { directory, file } = fixture();
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  let now = new Date("2026-08-30T00:00:00.000Z");
+  const store = new ScheduleStore(file, { clock: () => now });
+  store.create({
+    ...input,
+    date: "2026-08-30",
+    time: "09:00",
+    playMode: "SHUFFLE",
+    durationMinutes: 0,
+  });
+  const broadcasts = { async create() { return { broadcast: { id: "broadcast-10" } }; }, get() { return null; }, async cancel() {} };
+  const service = new ScheduleService({
+    store,
+    media: { getFile: (id) => ({ id, freeswitchPath: "/var/lib/freeswitch/storage/media/test.wav" }) },
+    zones: { list: () => [{ id: "zone-1", name: "测试分区", terminalIds: ["8000@sip.local"] }] },
+    broadcasts,
+  });
+  now = new Date("2026-08-30T01:00:01.000Z");
+  await service.runDue(now);
+  // 时长为 0 = 一直播放，不应排定停止
+  assert.equal(service.pendingStops.size, 0);
+});

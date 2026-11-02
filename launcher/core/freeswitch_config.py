@@ -25,6 +25,30 @@ def _escape_xml(value: str) -> str:
     )
 
 
+# 编解码优先级：G722（G.722）是 16 kHz 采样的宽带语音，64 kbps。
+# 注意 RFC 3551 规定 G722 的 RTP 时钟率字段必须写 8000（RFC 1890 的历史
+# 遗留错误），FreeSWITCH 内部仍以 16000 Hz 处理，终端侧不要按 SDP 里的
+# 8000 去解码，否则会听到降速变调的声音。
+DEFAULT_CODEC_PREFS = "OPUS,G722,PCMU,PCMA"
+
+# 随包 FreeSWITCH 演示账号对应的目录分组区块。
+#
+# directory/default.xml 里 sales/billing/support 三个组只由 `type="pointer"`
+# 指针构成，指向随包演示分机 1000~1014。这些分机文件会被清理（换成 8XXX 号段），
+# 若不删掉指针，FreeSWITCH 会把它们当作**已定义但无密码**的用户，
+# `list_users` 就会出现 `1000||sip.local|sales|...` 这类幽灵记录，
+# 在 SIP 账号管理页里显示成一批读不到密码的空账号。
+_VANILLA_POINTER_GROUP_PATTERN = re.compile(
+    r'[ \t]*<group\s+name="(?:sales|billing|support)">[\s\S]*?</group>\s*\n?'
+)
+
+# 需要由本文件（而非随包样例）接管的本机分机号段拨号方案。
+# 随包 dialplan 的 `^80(\d{2})$` 是「从通话组删除成员」的演示功能，
+# 不接管的话拨打 8001 不会呼通终端。
+_LOCAL_EXTENSIONS_FILE = "01_local_extensions.xml"
+
+
+
 class FreeswitchConfigurator:
     """把模板渲染到目标 conf 目录。
 
@@ -41,32 +65,71 @@ class FreeswitchConfigurator:
 
     def render(self, *, esl_password: str, sip_domain: str, sip_default_password: str,
                external_ip: str, sip_port: int, conf_dir: Path | None = None,
-               bind_ip: str = "") -> None:
+               bind_ip: str = "", codec_prefs: str = DEFAULT_CODEC_PREFS) -> None:
         conf = Path(conf_dir) if conf_dir else (self.fs_root / "conf")
         conf.mkdir(parents=True, exist_ok=True)
 
         self._render_event_socket(conf, esl_password)
-        self._render_vars(conf, sip_domain, sip_default_password, external_ip, bind_ip)
+        self._render_vars(conf, sip_domain, sip_default_password, external_ip, bind_ip, codec_prefs)
         self._patch_internal_profile(conf, sip_port, bind_ip)
         self._patch_switch_conf(conf)
         self._patch_acl_conf(conf)
         self._patch_modules(conf)
-        preset_template = self.template_root / "preset-broadcast.xml"
-        if preset_template.is_file():
-            preset_target = conf / "dialplan" / "default" / "00_preset_broadcast.xml"
-            preset_target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(preset_template, preset_target)
-            # Vanilla FreeSWITCH reserves 88* for eavesdrop. Route our service
-            # numbers first, before the sample dialplan can consume them.
-            default_plan = conf / "dialplan" / "default.xml"
+        self._install_dialplan_files(conf)
+        self._patch_directory_pointers(conf)
+        self._ensure_directories()
+
+    def _install_dialplan_files(self, conf: Path) -> None:
+        """装入项目自带的拨号方案文件。
+
+        001 序号的预设广播路由（88xxxx）与 00 序号同理：都必须排在样例
+        dialplan 之前，否则会被样例规则抢先匹配。
+        """
+        files = (
+            # 预设广播服务号码（88xxxx）：本项目原始文件，序号 00 保证最先命中
+            ("preset-broadcast.xml", "00_preset_broadcast.xml"),
+            # 本机分机号段（80xx）：必须早于样例的 `^80(\\d{2})$`（删通话组成员）
+            ("local-extensions.xml", _LOCAL_EXTENSIONS_FILE),
+        )
+        default_plan = conf / "dialplan" / "default.xml"
+
+        for source_name, target_name in files:
+            template = self.template_root / source_name
+            if not template.is_file():
+                continue
+            target = conf / "dialplan" / "default" / target_name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(template, target)
+
+            # Vanilla FreeSWITCH reserves 88* for eavesdrop and 80xx for callgroup
+            # demos. Route our service numbers first, before the sample dialplan
+            # can consume them.
             if default_plan.is_file():
                 text = default_plan.read_text(encoding="utf-8")
-                include = '<X-PRE-PROCESS cmd="include" data="default/00_preset_broadcast.xml"/>'
+                include = f'<X-PRE-PROCESS cmd="include" data="default/{target_name}"/>'
                 if include not in text:
                     text = text.replace('<context name="default">', '<context name="default">\n    ' + include, 1)
                     default_plan.write_text(text, encoding="utf-8")
-            self.log("[config] 已配置预设广播 SIP 呼叫路由")
-        self._ensure_directories()
+            self.log(f"[config] 已装入拨号方案 {target_name}")
+
+    def _patch_directory_pointers(self, conf: Path) -> None:
+        """移除指向随包演示分机的目录分组指针。
+
+        directory/default.xml 的 sales / billing / support 三组只有指针、
+        没有实际用户定义。这些指针指向演示分机 1000~1014，而演示分机会被
+        业务后端清理并替换成 8XXX 号段。悬空指针会让 FreeSWITCH 造出
+        「无密码、无上下文」的幽灵用户，污染 SIP 账号列表。
+        """
+        target = conf / "directory" / "default.xml"
+        if not target.is_file():
+            return
+        text = target.read_text(encoding="utf-8")
+        stripped, count = _VANILLA_POINTER_GROUP_PATTERN.subn("", text)
+        if count == 0:
+            return
+        target.write_text(stripped, encoding="utf-8")
+        self.log(f"[config] 已移除 {count} 个指向演示分机的目录分组指针")
+
 
     # ---------------- 各配置文件 ----------------
 
@@ -103,7 +166,8 @@ class FreeswitchConfigurator:
         self.log(f"[config] 已写入 {target.name}")
 
     def _render_vars(self, conf: Path, sip_domain: str, sip_default_password: str,
-                     external_ip: str, bind_ip: str = "") -> None:
+                     external_ip: str, bind_ip: str = "",
+                     codec_prefs: str = DEFAULT_CODEC_PREFS) -> None:
         target = conf / "vars.xml"
         if not target.is_file():
             self.log(f"[config] 跳过 vars.xml（不存在）: {target}")
@@ -133,8 +197,8 @@ class FreeswitchConfigurator:
         set_data("default_password", _escape_xml(sip_default_password))
         set_data("external_rtp_ip", _escape_xml(external_ip))
         set_data("external_sip_ip", _escape_xml(external_ip))
-        set_data("global_codec_prefs", "OPUS,G722,PCMU,PCMA")
-        set_data("outbound_codec_prefs", "OPUS,G722,PCMU,PCMA")
+        set_data("global_codec_prefs", _escape_xml(codec_prefs))
+        set_data("outbound_codec_prefs", _escape_xml(codec_prefs))
 
         # 显式钉住本机绑定 IP。
         # 关键：FreeSWITCH 默认用内部探测得到的 local_ip_v4，机器上存在代理

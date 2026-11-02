@@ -2,6 +2,8 @@ import { randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypt
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
+import { DEFAULT_CODEC_PREFS, normalizeCodecPrefs } from "./codec-service.mjs";
+
 function problem(message, status = 400) { return Object.assign(new Error(message), { status }); }
 function clone(value) { return structuredClone(value); }
 function hashPassword(password) { const salt = randomBytes(16).toString("hex"); const hash = scryptSync(password, salt, 32).toString("hex"); return `scrypt$${salt}$${hash}`; }
@@ -22,16 +24,33 @@ export class SystemStore {
   constructor(file) {
     this.file = file;
     mkdirSync(dirname(file), { recursive: true });
-    this.state = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {
-      config: { organizationName: "广播组织", organizationCode: "SIP-BROADCAST", contact: "", phone: "", theme: "light", updatedAt: new Date().toISOString() },
+    this.load();
+  }
+
+  /**
+   * 从磁盘载入并做结构规范化。
+   * 构造函数与 reload() 共用：规范化规则只写一份，
+   * 否则手工编辑过的 system.json 导入后行为会与启动时不一致。
+   */
+  load() {
+    this.state = existsSync(this.file) ? JSON.parse(readFileSync(this.file, "utf8")) : {
+      config: { organizationName: "广播组织", organizationCode: "SIP-BROADCAST", contact: "", phone: "", theme: "light", codecPrefs: [...DEFAULT_CODEC_PREFS], updatedAt: new Date().toISOString() },
       users: [],
       permissions: defaultPermissions,
     };
     if (!this.state.config || typeof this.state.config !== "object") this.state.config = {};
     if (!["light", "dark"].includes(this.state.config.theme)) this.state.config.theme = "light";
+    if (!Array.isArray(this.state.config.codecPrefs) || !this.state.config.codecPrefs.length) {
+      this.state.config.codecPrefs = [...DEFAULT_CODEC_PREFS];
+    }
     if (!Array.isArray(this.state.users)) this.state.users = [];
     if (!Array.isArray(this.state.permissions)) this.state.permissions = defaultPermissions;
+    return this;
   }
+
+  /** 重新从磁盘加载（备份导入 / 恢复出厂设置后同步内存状态）。 */
+  reload() { return this.load(); }
+
   persist() { const temporary = `${this.file}.tmp`; writeFileSync(temporary, JSON.stringify(this.state, null, 2)); renameSync(temporary, this.file); }
   getConfig() { return clone(this.state.config); }
   updateConfig(input) {
@@ -44,7 +63,12 @@ export class SystemStore {
     if (!/^[A-Za-z0-9_-]{2,40}$/.test(organizationCode)) throw problem("organizationCode must contain 2-40 letters, numbers, underscores, or hyphens");
     if (contact.length > 80 || phone.length > 40) throw problem("contact or phone is too long");
     if (!["light", "dark"].includes(theme)) throw problem("theme must be light or dark");
-    this.state.config = { organizationName, organizationCode, contact, phone, theme, updatedAt: new Date().toISOString() };
+    // 未传 codecPrefs 时保留原值：前端切换主题只提交 theme，不应该把
+    // 编解码顺序重置掉。
+    const codecPrefs = input.codecPrefs === undefined
+      ? normalizeCodecPrefs(this.state.config.codecPrefs)
+      : normalizeCodecPrefs(input.codecPrefs);
+    this.state.config = { organizationName, organizationCode, contact, phone, theme, codecPrefs, updatedAt: new Date().toISOString() };
     this.persist(); return this.getConfig();
   }
   listUsers() { return this.state.users.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map(publicUser); }

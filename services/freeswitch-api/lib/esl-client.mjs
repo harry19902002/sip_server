@@ -133,6 +133,16 @@ export class EslClient {
   }
 }
 
+// 断连状态的播报节流窗口（毫秒）。
+//
+// 背景：FreeSWITCH 若长期不在线，原来的实现每 2 秒重连一次，且单次失败会因
+// error/close/catch 三处回调各播报一次 —— 实测把 api.log 刷了 4582 行
+// （约 0.6 MB），既淹没有效日志，也掩盖了真正的故障时间点。
+//
+// 现在的策略：只在「状态发生变化」时播报；持续断开期间每 60 秒提醒一次，
+// 这样既能第一时间暴露故障，又不会刷屏。
+const ESL_REPORT_REMINDER_MS = 60_000;
+
 export class EslEventSubscriber {
   constructor({ host, port = 8021, password, reconnectMs = 2000 }) {
     this.host = host;
@@ -142,6 +152,32 @@ export class EslEventSubscriber {
     this.stopped = true;
     this.socket = null;
     this.timer = null;
+    // 节流用：当前是否已断开、上次播报断开/恢复的时间、本次断连累计重试次数
+    this.disconnected = null;
+    this.lastReportAt = 0;
+    this.attempts = 0;
+  }
+
+  /**
+   * 按「状态变化才播报」的规则上报连接状态。
+   * 持续断开时每 ESL_REPORT_REMINDER_MS 提醒一次，避免刷屏（见常量注释）。
+   */
+  reportState(state) {
+    const now = Date.now();
+    const connected = state.connected === true;
+    const changed = this.disconnected === null || this.disconnected !== !connected;
+    if (changed) {
+      this.lastReportAt = now;
+      this.disconnected = !connected;
+      if (connected) this.attempts = 0;
+      this.onState(state);
+      return;
+    }
+    if (connected) return; // 一直连着：不重复播报
+    if (now - this.lastReportAt >= ESL_REPORT_REMINDER_MS) {
+      this.lastReportAt = now;
+      this.onState({ ...state, reminder: true, attempts: this.attempts });
+    }
   }
 
   start(onEvent, onState = () => {}) {
@@ -163,10 +199,19 @@ export class EslEventSubscriber {
     this.socket = socket;
     const nextFrame = createFrameReader(socket);
     let authenticated = false;
+    // error/close/catch 三处都可能触发重连，用一次性闭包内的标记去重，
+    // 否则同一次失败会重复上报并重复排定定时器。
+    let reconnected = false;
 
     const reconnect = (error) => {
-      if (this.stopped) return;
-      this.onState({ connected: false, error: error?.message ?? "ESL event connection closed" });
+      if (this.stopped || reconnected) return;
+      reconnected = true;
+      this.attempts += 1;
+      this.reportState({
+        connected: false,
+        error: error?.message ?? "ESL event connection closed",
+        attempts: this.attempts,
+      });
       clearTimeout(this.timer);
       this.timer = setTimeout(() => this.connect(), this.reconnectMs);
     };
@@ -184,7 +229,7 @@ export class EslEventSubscriber {
       socket.write("event json BACKGROUND_JOB CHANNEL_ANSWER CHANNEL_PARK CHANNEL_HANGUP_COMPLETE CUSTOM sofia::register sofia::unregister\n\n");
       const subscription = await nextFrame();
       if (!subscription.headers["reply-text"]?.startsWith("+OK")) throw new Error("FreeSWITCH rejected ESL event subscription");
-      this.onState({ connected: true });
+      this.reportState({ connected: true });
 
       while (!this.stopped && !socket.destroyed) {
         const frame = await nextFrame();

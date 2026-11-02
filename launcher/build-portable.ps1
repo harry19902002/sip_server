@@ -451,25 +451,29 @@ if errorlevel 1 pause
 "@
 [System.IO.File]::WriteAllText($batPath, $batContent, (New-Object System.Text.UTF8Encoding($false)))
 
-# 把启动器源码放进便携包，便于无 exe 时直接运行与排查
+# 把启动器源码放进便携包，便于无 exe 时直接运行与排查。
+#
+# 注意：这里必须**每次都覆盖复制**，不能写成 `if (-not (Test-Path ...))`。
+# 之前就是那个写法，导致输出目录已存在时整段被跳过，包内的 launcher 源码
+# 长期停留在旧版本（实测 config.py 停留在 9-12、freeswitch_config.py 停留在
+# 10-12），排查问题时看到的源码与实际运行逻辑不一致，误判风险很高。
 $launcherTarget = Join-Path $OutputDirectory "launcher"
-if (-not (Test-Path -LiteralPath $launcherTarget)) {
-    Copy-Item -LiteralPath $LauncherDir -Destination $launcherTarget -Recurse -Force
-    # 移除仅用于构建的文件，保持运行目录简洁
-    foreach ($name in @("build-portable.ps1", "build.spec", "debug-build.ps1")) {
-        $stale = Join-Path $launcherTarget $name
-        if (Test-Path -LiteralPath $stale) {
-            if (Test-Path -LiteralPath $stale) { [System.IO.File]::Delete($stale) }
-        }
-    }
-    # 移除打包过程中生成的字节码缓存
-    foreach ($cacheDir in Get-ChildItem -LiteralPath $launcherTarget -Directory -ErrorAction SilentlyContinue) {
-        if ($cacheDir.Name -eq "__pycache__") {
-            Remove-DirectorySafe $cacheDir.FullName
-        }
-    }
-    Write-Ok "已附带启动器源码（调试用）"
+if (Test-Path -LiteralPath $launcherTarget) {
+    Remove-DirectorySafe $launcherTarget
 }
+Copy-Item -LiteralPath $LauncherDir -Destination $launcherTarget -Recurse -Force
+# 移除仅用于构建的文件，保持运行目录简洁
+foreach ($name in @("build-portable.ps1", "build.spec", "debug-build.ps1")) {
+    $stale = Join-Path $launcherTarget $name
+    if (Test-Path -LiteralPath $stale) { [System.IO.File]::Delete($stale) }
+}
+# 移除打包过程中生成的字节码缓存
+foreach ($cacheDir in Get-ChildItem -LiteralPath $launcherTarget -Directory -ErrorAction SilentlyContinue) {
+    if ($cacheDir.Name -eq "__pycache__") {
+        Remove-DirectorySafe $cacheDir.FullName
+    }
+}
+Write-Ok "已附带启动器源码（调试用）"
 
 # ---------------------------------------------------------------- 8. 配置文件与说明
 
@@ -547,11 +551,31 @@ if (-not $SkipInstaller) {
     Write-Step "编译安装包"
 
     # 定位 Inno Setup 编译器
+    #
+    # 注意：Inno Setup 默认可以只给当前用户安装（装在
+    # %LOCALAPPDATA%\Programs\Inno Setup 6），此时 Program Files 下什么都没有。
+    # 因此除了常见目录，还要查注册表里的安装位置（最可靠），并按用户
+    # 环境变量展开。
     $isccCandidates = @()
     foreach ($pf in Get-ProgramFilesPaths) {
         foreach ($ver in @("Inno Setup 6", "Inno Setup 7")) {
             $isccCandidates += (Join-PathSafe $pf "$ver\ISCC.exe")
         }
+    }
+    $localAppData = [Environment]::GetFolderPath("LocalApplicationData")
+    foreach ($ver in @("Inno Setup 6", "Inno Setup 7")) {
+        $isccCandidates += (Join-PathSafe (Join-Path $localAppData "Programs") "$ver\ISCC.exe")
+    }
+    # 注册表：Inno SetupSetupData\InstallPath 指向真正的安装目录
+    foreach ($regPath in @(
+        "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Inno Setup 6_is1",
+        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Inno Setup 6_is1",
+        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Inno Setup 6_is1"
+    )) {
+        try {
+            $installPath = (Get-ItemProperty -LiteralPath $regPath -ErrorAction Stop).InstallLocation
+            if ($installPath) { $isccCandidates += (Join-PathSafe $installPath "ISCC.exe") }
+        } catch { }
     }
     # 允许通过环境变量显式指定（非标准安装位置时使用）
     if ($env:ISCC_PATH) { $isccCandidates = @($env:ISCC_PATH) + $isccCandidates }

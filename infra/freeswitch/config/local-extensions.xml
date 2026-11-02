@@ -1,0 +1,26 @@
+<include>
+  <!--
+    本地终端分机号段：80xx（默认 8001~8020）。
+
+    必须由本文件（而不是随包样例）负责路由，原因：
+      随包 dialplan 的 `^80(\d{2})$` 会被解析成「从通话组里删除成员」的演示
+      功能，`^81(\d{2})$` 是「加入通话组」。也就是说 80xx 在 vanilla 配置里
+      根本**不是分机号**，拨打 8001 会去操作 callgroup 而不是呼叫终端。
+
+    本文件通过 X-PRE-PROCESS 在 `<context name="default">` 之后立刻 include
+    （见 default.xml 顶部），因此优先于样例的 8xx 规则命中。
+
+    只覆盖 80xx，不动 8100~8109（样例 intercom）与 81xx/82xx/83xx（样例通话组），
+    以免改动无关的演示行为。
+  -->
+  <extension name="local_extensions_8xxx">
+    <condition field="destination_number" expression="^(80\d{2})$">
+      <action application="set" data="dialed_extension=$1"/>
+      <action application="export" data="dialed_extension=$1"/>
+      <action application="set" data="call_timeout=30"/>
+      <action application="set" data="hangup_after_bridge=true"/>
+      <action application="set" data="continue_on_fail=true"/>
+      <action application="bridge" data="user/$1@${domain_name}"/>
+    </condition>
+  </extension>
+</include>

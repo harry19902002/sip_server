@@ -25,6 +25,10 @@
     "portable:build": "powershell -ExecutionPolicy Bypass -File launcher/build-portable.ps1",
     "portable:check": "python launcher/selftest.py",
     "freeswitch:api:test": "node --test services/freeswitch-api/test/*.test.mjs",
+    "freeswitch:config:test": "node --test tests/freeswitch-codecs.test.mjs",
+    "launcher:test": ".venv/Scripts/python.exe tests/test_watchdog.py",
+    "portable:modules:test": ".venv/Scripts/python.exe tests/test_portable_modules.py",
+    "ntp:diagnose": "powershell -ExecutionPolicy Bypass -File scripts/fix-ntp-proxy.ps1 -DiagnoseOnly",
     "freeswitch:e2e:test": "node tests/sip-broadcast.integration.mjs",
     "presets:e2e:test": "node tests/preset-broadcast.integration.mjs",
     "media:e2e:test": "node tests/media-api.integration.mjs"

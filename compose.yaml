@@ -15,6 +15,7 @@ services:
       FREESWITCH_DOMAIN: ${FREESWITCH_DOMAIN:-sip.local}
       FREESWITCH_EXTERNAL_IP: ${FREESWITCH_EXTERNAL_IP:-auto-nat}
       SIP_DEFAULT_PASSWORD: ${SIP_DEFAULT_PASSWORD:?Set SIP_DEFAULT_PASSWORD in .env}
+      FREESWITCH_CODEC_PREFS: ${FREESWITCH_CODEC_PREFS:-OPUS,G722,PCMU,PCMA}
     volumes:
       - ./infra/freeswitch/config/event_socket.conf.xml.template:/opt/sip-server/event_socket.conf.xml.template:ro
       - ./infra/freeswitch/config/switch.conf.xml:/etc/freeswitch/autoload_configs/switch.conf.xml:ro
@@ -51,6 +52,8 @@ services:
       FREESWITCH_DOMAIN: ${FREESWITCH_DOMAIN:-sip.local}
       SIP_PORT: ${SIP_PORT:-5060}
       SIP_SERVER_HOST: ${SIP_SERVER_HOST:-127.0.0.1}
+      # 预置 8XXX 号段账号的鉴权密码，必须与 freeswitch 服务的同名变量一致
+      SIP_DEFAULT_PASSWORD: ${SIP_DEFAULT_PASSWORD:?Set SIP_DEFAULT_PASSWORD in .env}
       ESL_TIMEOUT_MS: ${ESL_TIMEOUT_MS:-5000}
       BROADCAST_DATA_FILE: /data/broadcasts.json
       MEDIA_DATA_FILE: /data/media.json

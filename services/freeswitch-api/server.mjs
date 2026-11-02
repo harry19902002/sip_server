@@ -1,13 +1,16 @@
 import { createServer } from "node:http";
-import { createHmac, randomInt, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { createReadStream, existsSync, statSync } from "node:fs";
+import * as fsModule from "node:fs";
 import { EslClient, EslEventSubscriber } from "./lib/esl-client.mjs";
 import { BroadcastStore } from "./lib/broadcast-store.mjs";
 import { BroadcastService } from "./lib/broadcast-service.mjs";
 import { MediaStore } from "./lib/media-store.mjs";
+import { buildAudio, expandSources } from "./lib/play-source.mjs";
 import { terminalRegistry } from "./lib/terminal-registry.mjs";
 import { sipAccountRegistry } from "./lib/sip-account-registry.mjs";
 import { SipAccountStore } from "./lib/sip-account-store.mjs";
+import { provisionDefaultAccounts } from "./lib/sip-provisioner.mjs";
 import { TerminalMetadataStore } from "./lib/terminal-metadata-store.mjs";
 import { ZoneStore } from "./lib/zone-store.mjs";
 import { ScheduleStore } from "./lib/schedule-store.mjs";
@@ -16,6 +19,9 @@ import { SystemStore } from "./lib/system-store.mjs";
 import { dirname, join } from "node:path";
 import { PresetStore } from "./lib/preset-store.mjs";
 import { PresetService } from "./lib/preset-service.mjs";
+import { buildZonePagingDialplan, writeZonePagingDialplan } from "./lib/zone-dialplan.mjs";
+import { CODEC_CATALOG, CodecService, normalizeCodecPrefs } from "./lib/codec-service.mjs";
+import { BackupService } from "./lib/backup-service.mjs";
 
 const config = {
   port: Number(process.env.PORT ?? 3001),
@@ -37,8 +43,13 @@ const config = {
   zoneDataFile: process.env.ZONE_DATA_FILE ?? "/data/zones.json",
   scheduleDataFile: process.env.SCHEDULE_DATA_FILE ?? "/data/schedules.json",
   systemDataFile: process.env.SYSTEM_DATA_FILE ?? "/data/system.json",
+  // 分区群呼拨号方案的输出目录（FreeSWITCH conf/dialplan）；留空则跳过生成
+  zoneDialplanDir: process.env.ZONE_DIALPLAN_DIR ?? "",
   systemAdminUsername: process.env.SYSTEM_ADMIN_USERNAME ?? "admin",
   systemAdminPassword: process.env.SYSTEM_ADMIN_PASSWORD ?? "123456",
+  // 预置 8XXX 号段账号使用的鉴权密码。Docker 部署时由 compose 从 .env 透传，
+  // 与 vars.xml 的 default_password 保持一致；未设置则用内置默认值。
+  sipDefaultPassword: process.env.SIP_DEFAULT_PASSWORD || undefined,
   allowBrowserApi: process.env.ALLOW_INSECURE_BROWSER_API === "true",
   domain: process.env.FREESWITCH_DOMAIN ?? "sip.local",
   esl: {
@@ -70,8 +81,92 @@ const presets = new PresetService({ store: new PresetStore(process.env.PRESET_DA
   numberAvailable: (number) => !existsSync(join(config.sipDirectory, `${number}.xml`)),
 }), media, zones, broadcasts, esl });
 const system = new SystemStore(config.systemDataFile);
+const codecs = new CodecService({ esl });
+// 备份服务需要拿到全部 Store，才能做到「导入后内存状态与磁盘一致」。
+// 回滚包与业务数据同目录，便于整包迁移时一起带走。
+const backup = new BackupService({
+  stores: { broadcasts: store, media, zones, schedules, presets, system, terminals: terminalMetadata },
+  backupDirectory: process.env.BACKUP_DIRECTORY ?? join(dirname(config.dataFile), "backups"),
+});
 system.ensureBootstrapAdmin({ username: config.systemAdminUsername, name: "系统管理员", password: config.systemAdminPassword });
+
+// ---------- 默认 SIP 账号预置 ----------
+//
+// 首次启动补齐 8XXX 号段（8001~8020）并清理随包演示分机，
+// 之后启动只做幂等检查。详细理由见 lib/sip-provisioner.mjs。
+//
+// 文件写入与 reloadxml 分成两步，各自重试：账号文件是幂等落盘的，
+// 即使写完后 reloadxml 一直失败（引擎未起），下次启动也会重新收敛。
+async function provisionSipAccounts({ attempts = 40, intervalMs = 1500 } = {}) {
+  let result;
+  try {
+    result = provisionDefaultAccounts(sipAccounts, {
+      range: config.sipDefaultPassword ? { password: config.sipDefaultPassword } : {},
+    });
+  } catch (error) {
+    console.error(JSON.stringify({ component: "sip-provision", error: error.message }));
+    return null;
+  }
+
+  // 无改动即已收敛，不必打扰引擎
+  if (!result.created.length && !result.pruned.length) return result;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      await esl.execute("reloadxml");
+      console.log(JSON.stringify({
+        component: "sip-provision",
+        event: "applied",
+        created: result.created.length,
+        pruned: result.pruned.length,
+      }));
+      return result;
+    } catch (error) {
+      // ESL 未就绪时 reloadxml 会失败；账号文件已落盘，等引擎起来再重试。
+      if (attempt === attempts) {
+        console.error(JSON.stringify({ component: "sip-provision", reloadFailed: error.message }));
+        return result;
+      }
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+  }
+  return result;
+}
+
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+// ---------- 分区群呼拨号方案 ----------
+//
+// 拨号方案按「号码 → 会议」映射生成。分区变化后需要重新生成并让
+// FreeSWITCH 重载，否则新号码要等下次重启才生效。
+// 该文件落在 FreeSWITCH 的 conf/dialplan 目录下（Windows 便携版为
+// data/freeswitch/conf/dialplan），由 freeswitch.xml 自动 include。
+
+/** dialplan 文件所在目录；未配置时跳过生成（例如容器里由挂载卷提供）。 */
+function zoneDialplanDirectory() {
+  return config.zoneDialplanDir;
+}
+
+async function syncZoneDialplan() {
+  const directory = zoneDialplanDirectory();
+  if (!directory) return { written: false, skipped: true };
+  try {
+    const content = buildZonePagingDialplan(zones.dialplanZones(), { domain: config.domain });
+    const { written, path } = writeZonePagingDialplan(fsModule, directory, content);
+    if (written) {
+      // 让 FreeSWITCH 立即重新加载拨号方案，避免必须重启才能生效。
+      await esl.execute("reloadxml").catch((error) => {
+        console.error(JSON.stringify({ component: "zone-dialplan", error: error.message }));
+      });
+      console.log(JSON.stringify({ component: "zone-dialplan", event: "written", path }));
+    }
+    return { written, path };
+  } catch (error) {
+    // 生成失败不应影响分区本身的增删改，仅记录。
+    console.error(JSON.stringify({ component: "zone-dialplan", error: error.message }));
+    return { written: false, error: error.message };
+  }
+}
 
 // 局域网部署时，管理页面通过 http://<局域网IP>:3000 打开，
 // 而 API 在 <局域网IP>:3001，属于同主机跨端口。浏览器会带上
@@ -197,16 +292,6 @@ function playlistPayload(playlist) {
   return { ...playlist, files: playlist.files.map(mediaFilePayload) };
 }
 
-// Fisher-Yates 洗牌；返回新数组，不修改入参。
-function shufflePaths(items) {
-  const result = [...items];
-  for (let index = result.length - 1; index > 0; index -= 1) {
-    const swap = randomInt(index + 1);
-    [result[index], result[swap]] = [result[swap], result[index]];
-  }
-  return result;
-}
-
 async function readJson(request) {
   try {
     return JSON.parse((await readBody(request, 64 * 1024)).toString("utf8") || "{}");
@@ -304,6 +389,31 @@ async function route(request, response) {
 
   if (request.method === "GET" && url.pathname === "/api/v1/system/config") return json(response, 200, { config: system.getConfig(), requestId });
   if (request.method === "PATCH" && url.pathname === "/api/v1/system/config") return adminAuthorized(request) ? json(response, 200, { config: system.updateConfig(await readJson(request)), requestId }) : json(response, 403, { error: "forbidden", message: "需要系统管理员权限", requestId });
+  // 编解码：GET 返回可选清单 + 已保存顺序 + FreeSWITCH 当前实际生效的顺序。
+  if (request.method === "GET" && url.pathname === "/api/v1/system/codecs") {
+    return json(response, 200, {
+      items: CODEC_CATALOG,
+      prefs: system.getConfig().codecPrefs,
+      active: await codecs.activePrefs(),
+      profile: codecs.profile,
+      requestId,
+    });
+  }
+  // PATCH 保存顺序；apply=true 时同时下发到 FreeSWITCH 并重启 SIP profile。
+  // 应用失败（例如 FreeSWITCH 离线）不回滚已保存的配置，只把错误回给前端。
+  if (request.method === "PATCH" && url.pathname === "/api/v1/system/codecs") {
+    if (!adminAuthorized(request)) return json(response, 403, { error: "forbidden", message: "需要系统管理员权限", requestId });
+    const input = await readJson(request);
+    const prefs = normalizeCodecPrefs(input.prefs);
+    const stored = system.updateConfig({ codecPrefs: prefs }).codecPrefs;
+    let applied = null;
+    let applyError = null;
+    if (input.apply !== false) {
+      try { applied = await codecs.apply(stored, { restartProfile: input.restartProfile !== false }); }
+      catch (error) { applyError = error.message ?? "编码格式已保存，但下发到 FreeSWITCH 失败"; }
+    }
+    return json(response, 200, { prefs: stored, applied, applyError, requestId });
+  }
   if (request.method === "GET" && url.pathname === "/api/v1/users") return json(response, 200, { items: system.listUsers(), count: system.listUsers().length, requestId });
   if (request.method === "POST" && url.pathname === "/api/v1/users") return adminAuthorized(request) ? json(response, 201, { user: system.createUser(await readJson(request)), requestId }) : json(response, 403, { error: "forbidden", message: "需要系统管理员权限", requestId });
   const userMatch = url.pathname.match(/^\/api\/v1\/users\/([^/]+)$/);
@@ -312,13 +422,109 @@ async function route(request, response) {
   if (request.method === "GET" && url.pathname === "/api/v1/permissions") return json(response, 200, { items: system.permissions(), requestId });
   if (request.method === "PATCH" && url.pathname === "/api/v1/permissions") return adminAuthorized(request) ? json(response, 200, { items: system.updatePermissions(await readJson(request)), requestId }) : json(response, 403, { error: "forbidden", message: "需要系统管理员权限", requestId });
 
+  // ---------- 备份 / 导入 / 恢复出厂 ----------
+  //
+  // 三者都只允许系统管理员：它们会整体替换业务数据（含用户账号），
+  // 属于不可由操作员触发的破坏性操作。
+  if (request.method === "GET" && url.pathname === "/api/v1/system/backup/info") {
+    if (!adminAuthorized(request)) return json(response, 403, { error: "forbidden", message: "需要系统管理员权限", requestId });
+    return json(response, 200, { manifest: backup.manifest(), rollbacks: backup.listRollbacks(), requestId });
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/v1/system/backup") {
+    if (!adminAuthorized(request)) return json(response, 403, { error: "forbidden", message: "需要系统管理员权限", requestId });
+    const result = backup.create();
+    // 直接以附件形式返回，浏览器会按 filename 下载
+    const headers = {
+      "content-type": "application/zip",
+      "content-length": String(result.buffer.length),
+      "content-disposition": `attachment; filename="${result.filename}"`,
+      "cache-control": "no-store",
+      "x-content-type-options": "nosniff",
+      "x-request-id": String(requestId),
+    };
+    setCors(request, response);
+    response.writeHead(200, headers);
+    response.end(result.buffer);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/v1/system/restore") {
+    if (!adminAuthorized(request)) return json(response, 403, { error: "forbidden", message: "需要系统管理员权限", requestId });
+    // 备份包体积取决于音频总量。readBody 会把整个包读进内存，
+    // 解压时还要再占一份，因此上限取 256MB（约为当前媒体库的 20 倍余量），
+    // 而不是不设边界——否则一个超大包就能把进程内存打满。
+    const body = await readBody(request, 256 * 1024 * 1024);
+    if (!body.length) return json(response, 400, { error: "empty_body", message: "请求体为空，请上传备份 ZIP 文件", requestId });
+    const result = await backup.import(body);
+    // 分区数据可能整体变化，拨号方案必须重新生成并重载
+    await syncZoneDialplan().catch((error) => console.error(JSON.stringify({ component: "zone-dialplan", error: error.message })));
+    return json(response, 200, { ...result, requestId });
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/v1/system/reset") {
+    if (!adminAuthorized(request)) return json(response, 403, { error: "forbidden", message: "需要系统管理员权限", requestId });
+    // 需要显式确认串，避免误调用（前端也会二次确认）
+    const input = await readJson(request);
+    if (String(input?.confirm ?? "") !== "RESET") {
+      return json(response, 400, { error: "confirmation_required", message: "恢复出厂设置需要提交 confirm: \"RESET\"", requestId });
+    }
+    const result = await backup.factoryReset({
+      defaultAdminUsername: config.systemAdminUsername,
+      defaultAdminPassword: config.systemAdminPassword,
+    });
+    await syncZoneDialplan().catch((error) => console.error(JSON.stringify({ component: "zone-dialplan", error: error.message })));
+    // 用户表已被重建，当前会话的 userId 随之失效。
+    // 主动清除 cookie 并明确告知需要重新登录，避免前端拿到 200 后
+    // 继续用失效会话请求、只看到一堆 401 却不知道为什么。
+    response.setHeader("set-cookie", "sip_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0");
+    return json(response, 200, { ...result, requiresRelogin: true, requestId });
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/v1/system/rollback") {
+    if (!adminAuthorized(request)) return json(response, 403, { error: "forbidden", message: "需要系统管理员权限", requestId });
+    return json(response, 200, { items: backup.listRollbacks(), requestId });
+  }
+
+  const rollbackDownload = url.pathname.match(/^\/api\/v1\/system\/rollback\/([^/]+)$/);
+  if (request.method === "GET" && rollbackDownload) {
+    if (!adminAuthorized(request)) return json(response, 403, { error: "forbidden", message: "需要系统管理员权限", requestId });
+    const result = backup.readRollback(decodeURIComponent(rollbackDownload[1]));
+    setCors(request, response);
+    response.writeHead(200, {
+      "content-type": "application/zip",
+      "content-length": String(result.buffer.length),
+      "content-disposition": `attachment; filename="${result.filename}"`,
+      "cache-control": "no-store",
+      "x-request-id": String(requestId),
+    });
+    response.end(result.buffer);
+    return;
+  }
+
   if (request.method === "GET" && url.pathname === "/api/v1/zones") return json(response, 200, { items: zones.list(), count: zones.list().length, requestId });
-  if (request.method === "POST" && url.pathname === "/api/v1/zones") return json(response, 201, { zone: zones.create(await readJson(request)), requestId });
+  if (request.method === "POST" && url.pathname === "/api/v1/zones") {
+    const zone = zones.create(await readJson(request));
+    await syncZoneDialplan();
+    return json(response, 201, { zone, requestId });
+  }
   const zoneMatch = url.pathname.match(/^\/api\/v1\/zones\/([^/]+)$/);
-  if (request.method === "PATCH" && zoneMatch) return json(response, 200, { zone: zones.rename(zoneMatch[1], await readJson(request)), requestId });
-  if (request.method === "DELETE" && zoneMatch) return json(response, 200, { zone: zones.delete(zoneMatch[1]), requestId });
+  if (request.method === "PATCH" && zoneMatch) {
+    const zone = zones.update(zoneMatch[1], await readJson(request));
+    await syncZoneDialplan();
+    return json(response, 200, { zone, requestId });
+  }
+  if (request.method === "DELETE" && zoneMatch) {
+    const zone = zones.delete(zoneMatch[1]);
+    await syncZoneDialplan();
+    return json(response, 200, { zone, requestId });
+  }
   const zoneTerminalsMatch = url.pathname.match(/^\/api\/v1\/zones\/([^/]+)\/terminals$/);
-  if (request.method === "PUT" && zoneTerminalsMatch) return json(response, 200, { zone: zones.assign(zoneTerminalsMatch[1], (await readJson(request)).terminalIds), requestId });
+  if (request.method === "PUT" && zoneTerminalsMatch) {
+    const zone = zones.assign(zoneTerminalsMatch[1], (await readJson(request)).terminalIds);
+    await syncZoneDialplan();
+    return json(response, 200, { zone, requestId });
+  }
 
   const terminalMatch = url.pathname.match(/^\/api\/v1\/terminals\/([^/]+)$/);
   if (request.method === "PATCH" && terminalMatch) {
@@ -472,44 +678,19 @@ async function route(request, response) {
       return json(response, 400, { error: "invalid_play_mode", message: "播放模式只能是单次播放、循环播放或随机播放", requestId });
     }
     input.playMode = playMode;
-    if (Array.isArray(input.sources)) {
-      if (!input.sources.length || input.sources.length > 50) return json(response, 400, { error: "invalid_sources", message: "播放内容需要选择 1-50 项", requestId });
-      const paths = [];
-      const sourceItems = [];
-      for (const source of input.sources) {
-        const id = String(source?.id ?? "");
-        if (source?.type === "FILE") {
-          const file = media.getFile(id);
-          if (!file) return json(response, 404, { error: "media_not_found", message: "所选音频文件不存在", requestId });
-          paths.push(file.freeswitchPath);
-          sourceItems.push({ type: "FILE", id: file.id, name: file.originalName, fileCount: 1 });
-        } else if (source?.type === "PLAYLIST") {
-          const playlist = media.getPlaylist(id);
-          if (!playlist) return json(response, 404, { error: "playlist_not_found", message: "所选播放列表不存在", requestId });
-          if (!playlist.files.length) return json(response, 400, { error: "playlist_empty", message: `播放列表“${playlist.name}”中没有音频文件`, requestId });
-          paths.push(...playlist.files.map((file) => file.freeswitchPath));
-          sourceItems.push({ type: "PLAYLIST", id: playlist.id, name: playlist.name, fileCount: playlist.files.length });
-        } else {
-          return json(response, 400, { error: "invalid_source_type", message: "播放内容类型不正确", requestId });
-        }
+    if (Array.isArray(input.sources) || input.playlistId) {
+      let expanded;
+      try {
+        expanded = expandSources({ sources: input.sources, playlistId: input.playlistId, media });
+      } catch (error) {
+        return json(response, error.status ?? 400, { error: "invalid_sources", message: error.message, requestId });
       }
-      if (paths.length > 100) return json(response, 400, { error: "too_many_media_files", message: "展开播放列表后音频总数不能超过 100 个", requestId });
       // 随机播放：打乱展开后的音频顺序，FreeSWITCH 仍按 file_string 顺序播放。
-      const orderedPaths = playMode === "SHUFFLE" ? shufflePaths(paths) : paths;
-      input.audio = orderedPaths.length === 1 ? orderedPaths[0] : `file_string://${orderedPaths.join("!")}`;
-      input.sourceType = sourceItems.length === 1 ? sourceItems[0].type : "MIXED";
-      input.sourceId = sourceItems.length === 1 ? sourceItems[0].id : null;
-      input.sourceName = sourceItems.map((source) => source.name).join("、");
-      input.sourceItems = sourceItems;
-    } else if (input.playlistId) {
-      const playlist = media.getPlaylist(String(input.playlistId));
-      if (!playlist) return json(response, 404, { error: "playlist_not_found", message: "播放列表不存在", requestId });
-      if (!playlist.files.length) return json(response, 400, { error: "playlist_empty", message: "播放列表中没有音频文件", requestId });
-      const playlistPaths = playlist.files.map((file) => file.freeswitchPath);
-      input.audio = `file_string://${(playMode === "SHUFFLE" ? shufflePaths(playlistPaths) : playlistPaths).join("!")}`;
-      input.sourceType = "PLAYLIST";
-      input.sourceId = playlist.id;
-      input.sourceName = playlist.name;
+      input.audio = buildAudio(expanded.paths, playMode);
+      input.sourceType = expanded.sourceType;
+      input.sourceId = expanded.sourceId;
+      input.sourceName = expanded.sourceName;
+      input.sourceItems = expanded.sourceItems;
     }
     const result = await broadcasts.create(input, {
       idempotencyKey: typeof request.headers["idempotency-key"] === "string" ? request.headers["idempotency-key"] : undefined,
@@ -527,6 +708,27 @@ async function route(request, response) {
   if (request.method === "POST" && cancelMatch) {
     const broadcast = await broadcasts.cancel(cancelMatch[1]);
     return json(response, 200, { broadcast, requestId });
+  }
+
+  // 调整「播放中」任务的音量：对仍未结束的目标信道实时生效。
+  const volumeMatch = url.pathname.match(/^\/api\/v1\/broadcasts\/([^/]+)\/volume$/);
+  if (request.method === "POST" && volumeMatch) {
+    const input = await readJson(request);
+    const volume = Number(input.volume);
+    if (!Number.isInteger(volume) || volume < 0 || volume > 100) {
+      return json(response, 400, { error: "invalid_volume", message: "音量必须是 0 到 100 之间的整数", requestId });
+    }
+    const result = await broadcasts.setVolume(volumeMatch[1], volume);
+    return json(response, 200, { ...result, requestId });
+  }
+
+  // 重发已结束的广播：复用原任务的播放内容、目标与音量，新建一条任务记录。
+  const replayMatch = url.pathname.match(/^\/api\/v1\/broadcasts\/([^/]+)\/replay$/);
+  if (request.method === "POST" && replayMatch) {
+    const result = await broadcasts.replay(replayMatch[1], {
+      idempotencyKey: typeof request.headers["idempotency-key"] === "string" ? request.headers["idempotency-key"] : undefined,
+    });
+    return json(response, 202, { ...result, requestId });
   }
 
   const hangupMatch = url.pathname.match(/^\/api\/v1\/channels\/([^/]+)\/hangup$/);
@@ -553,6 +755,10 @@ const server = createServer((request, response) => {
 
 server.listen(config.port, "0.0.0.0", () => {
   console.log(`FreeSWITCH API listening on port ${config.port}`);
+  // 预置默认 SIP 账号：异步执行，不阻塞接口监听
+  provisionSipAccounts().catch((error) => {
+    console.error(JSON.stringify({ component: "sip-provision", error: error.message }));
+  });
   eventSubscriber.start(
     (event) => {
       broadcasts.handleEvent(event);
@@ -560,6 +766,11 @@ server.listen(config.port, "0.0.0.0", () => {
     },
     (state) => console.log(JSON.stringify({ component: "esl-events", ...state })),
   );
+  // 启动时生成一次分区群呼拨号方案：保证「存量分区」在进程重启后
+  // 依然可以直接拨打分区号群呼，而不必等一次分区编辑触发。
+  syncZoneDialplan().catch((error) => {
+    console.error(JSON.stringify({ component: "zone-dialplan", error: error.message }));
+  });
 });
 
 const scheduleTimer = setInterval(() => {
@@ -576,6 +787,8 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, () => {
     clearInterval(scheduleTimer);
     clearInterval(presetTimer);
+    // 清理所有「到时自动停止」的定时器，避免退出时残留
+    for (const broadcastId of [...schedules.pendingStops.keys()]) schedules.cancelPendingStop(broadcastId);
     eventSubscriber.stop();
     server.close(() => process.exit(0));
   });

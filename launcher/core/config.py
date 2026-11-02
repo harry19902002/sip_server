@@ -147,6 +147,10 @@ class AppConfig:
     esl_port: int = 8021
     sip_port: int = 5060
     sip_domain: str = "sip.local"
+    # 编解码优先级（逗号分隔，越靠前越优先）。
+    # G722 即 G.722 宽带语音：实际采样 16 kHz / 64 kbps，
+    # SDP 中按 RFC 3551 写作 G722/8000（RFC 1890 的历史遗留错误）。
+    codec_prefs: str = "OPUS,G722,PCMU,PCMA"
 
     # FreeSWITCH 在 Windows 上无法像 Linux 一样被容器编排，
     # 这里保留可配置的监听地址。
@@ -166,7 +170,10 @@ class AppConfig:
 
     esl_password: str = "sip-broadcast-esl"
     api_key: str = "sip-broadcast-api-key"
-    sip_default_password: str = "123456"
+    # 默认 SIP 鉴权密码。与业务后端预置的 8XXX 号段账号保持一致
+    # （见 services/freeswitch-api/lib/sip-provisioner.mjs）。
+    # 该值仍写入 vars.xml 的 default_password，供 vars.xml 之外的样例配置引用。
+    sip_default_password: str = "Sip@admin"
 
     system_admin_username: str = "admin"
     system_admin_password: str = "123456"
@@ -234,6 +241,7 @@ class AppConfig:
             "SIP_ESL_PORT": "esl_port",
             "SIP_PORT": "sip_port",
             "FREESWITCH_DOMAIN": "sip_domain",
+            "FREESWITCH_CODEC_PREFS": "codec_prefs",
             "SIP_ESL_PASSWORD": "esl_password",
             "SIP_API_KEY": "api_key",
             "SIP_DEFAULT_PASSWORD": "sip_default_password",

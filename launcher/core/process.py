@@ -4,6 +4,10 @@ Windows 上的三个关键点：
 1. 用 `CREATE_NO_WINDOW` 隐藏子进程控制台窗口；
 2. 用 Job Object 绑定子进程，父进程退出时内核级连带回收，避免残留；
 3. 停止时先礼后兵：先 terminate，超时再 kill。
+
+另有运行期看门狗（watchdog）：子进程若在运行中意外退出（实测 FreeSWITCH 会因
+系统时钟跳变等原因静默退出），会自动重启，避免出现「管理页面能打开、但首页
+数据加载失败」这种半死状态。
 """
 
 from __future__ import annotations
@@ -24,6 +28,17 @@ from .state import ServiceState
 
 CREATE_NO_WINDOW = 0x08000000
 CREATE_NEW_PROCESS_GROUP = 0x00000200
+
+# ---------------------------------------------------------------- 看门狗参数
+
+# 巡检间隔：只做 process.poll()，开销极低，5 秒足以兼顾恢复速度与资源占用。
+WATCHDOG_INTERVAL = 5.0
+# 重启退避：第 n 次尝试等待 INTERVAL * 2^(n-1) 秒，避免崩溃循环打满 CPU。
+WATCHDOG_MAX_BACKOFF = 60.0
+# 进程存活超过该时长再退出，视为「偶发崩溃」，会重置连续失败计数。
+WATCHDOG_UNSTABLE_WINDOW = 60.0
+# 连续「起来就崩」的次数上限，超过则放弃自动重启，交还人工介入。
+WATCHDOG_UNSTABLE_LIMIT = 5
 
 # ---------------------------------------------------------------- Job Object
 
@@ -132,6 +147,9 @@ class ManagedProcess:
     process: subprocess.Popen
     log_path: Path
     started_at: float = field(default_factory=time.time)
+    # 看门狗用：已自动重启次数、连续「起来就崩」次数
+    restarts: int = 0
+    unstable_streak: int = 0
 
     def alive(self) -> bool:
         return self.process.poll() is None
@@ -155,6 +173,18 @@ class ProcessManager:
         self.progress: dict[str, str] = {}
         # 可选组件的降级原因（如未安装 FreeSWITCH）
         self.optional_failures: dict[str, str] = {}
+        # ---- 看门狗 ----
+        self._watchdog_thread: Optional[threading.Thread] = None
+        # 看门狗「代次」：stop/start 时自增，旧线程发现代次不匹配即自行退出。
+        # 不能只把 _watchdog_thread 置 None —— 旧线程仍在 sleep，醒来后若
+        # _stopping 已被新的 start 重置为 False，就会与新线程同时巡检并重复重启。
+        self._watchdog_gen = 0
+        # 启动/重启进行中：看门狗此时必须让路，否则会与正在编排的启动流程抢进程
+        self._busy = False
+        # 每个服务最近一次（自动）重启的时间戳，用于退避计算
+        self._last_restart_at: dict[str, float] = {}
+        # 恢复中的服务名，供 GUI 显示「正在恢复」而不误判成「运行中」
+        self.recovering: set[str] = set()
 
     # ---------- 状态回调 ----------
 
@@ -179,9 +209,20 @@ class ProcessManager:
         API 与前端为必需组件，任一失败则整体回滚。
         """
         self._stopping = False
+        self._busy = True
         self._emit(ServiceState.STARTING, "正在启动服务…")
         self.optional_failures.clear()
+        try:
+            return self._start_all_locked()
+        finally:
+            self._busy = False
+            # 启动编排结束后才开启看门狗：否则它可能在 API/前端尚未登记时就
+            # 把 FreeSWITCH 的正常启动窗口误判为崩溃并「重启」。
+            if not self._stopping:
+                self.start_watchdog()
 
+    def _start_all_locked(self) -> bool:
+        """启动编排主体（由 start_all 持有 _busy 标记调用）。"""
         # ---- 可选：FreeSWITCH ----
         self._set_progress("freeswitch", "FreeSWITCH 语音引擎 启动中…")
         if self.start_freeswitch():
@@ -219,14 +260,17 @@ class ProcessManager:
             self._emit(ServiceState.RUNNING, "所有服务运行中")
         return True
 
-    def start_freeswitch(self) -> bool:
+    def start_freeswitch(self, console: Optional[Path] = None) -> bool:
         """以便携方式启动 FreeSWITCH。
 
         Windows 版通过命令行参数指定各目录（-conf/-log/-db/-mod/...），
         从而把全部可变数据约束在便携目录内，不污染系统安装目录。
+
+        console 可显式传入（看门狗重启时复用首次探测到的路径，避免重复查找）。
         """
         fs_dir: Path = Path(self.config.freeweb_runtime_dir)
-        console = self._find_freeswitch_console(fs_dir)
+        if console is None:
+            console = self._find_freeswitch_console(fs_dir)
         if console is None:
             self.log(f"未找到 FreeSWITCH 可执行文件，目录: {fs_dir}")
             return False
@@ -262,6 +306,7 @@ class ProcessManager:
                 sip_port=self.config.sip_port,
                 conf_dir=conf_dir,
                 bind_ip=self.config.bind_ip,
+                codec_prefs=self.config.codec_prefs,
             )
         except Exception as exc:
             self.log(f"[config] 渲染 FreeSWITCH 配置失败: {exc}")
@@ -355,6 +400,8 @@ class ProcessManager:
                 "ESL_PASSWORD": self.config.esl_password,
                 "FREESWITCH_DOMAIN": self.config.sip_domain,
                 "SIP_PORT": str(self.config.sip_port),
+                # 预置 8XXX 号段账号的鉴权密码，与 vars.xml 的 default_password 一致
+                "SIP_DEFAULT_PASSWORD": self.config.sip_default_password,
                 "SIP_SERVER_HOST": self.config.sip_server_host,
                 "BROADCAST_DATA_FILE": str(data / "broadcasts.json"),
                 "MEDIA_DATA_FILE": str(data / "media.json"),
@@ -364,6 +411,11 @@ class ProcessManager:
                 "ZONE_DATA_FILE": str(data / "zones.json"),
                 "SCHEDULE_DATA_FILE": str(data / "schedules.json"),
                 "SYSTEM_DATA_FILE": str(data / "system.json"),
+                # 分区群呼拨号方案输出目录：FreeSWITCH 的 conf/dialplan，
+                # 由业务后端按分区数据生成 90_zone_paging.xml。
+                "ZONE_DIALPLAN_DIR": str(
+                    Path(self.config.freeweb_runtime_dir) / "conf" / "dialplan" / "default"
+                ),
                 "SYSTEM_ADMIN_USERNAME": str(self.config.system_admin_username),
                 "SYSTEM_ADMIN_PASSWORD": str(self.config.system_admin_password),
                 "ALLOW_INSECURE_BROWSER_API": "true",
@@ -529,6 +581,12 @@ class ProcessManager:
 
     def stop_all(self, grace: float = 10.0) -> None:
         self._stopping = True
+        self._busy = False
+        # 作废看门狗：自增代次后，旧线程下一次醒来会自行退出（见 _watchdog_gen 注释）
+        self._watchdog_gen += 1
+        self._watchdog_thread = None
+        with self._lock:
+            self.recovering.clear()
         self._emit(ServiceState.STOPPING, "正在停止服务…")
 
         with self._lock:
@@ -574,3 +632,155 @@ class ProcessManager:
     def snapshot(self) -> dict[str, Optional[int]]:
         with self._lock:
             return {key: item.exit_code() for key, item in self._processes.items()}
+
+    # ---------- 看门狗 ----------
+
+    def start_watchdog(self) -> None:
+        """启动运行期看门狗。
+
+        背景：FreeSWITCH 可能因系统时钟跳变等原因**静默退出**。此时 API 与前端
+        仍在监听，管理页面照常打开，但首页数据全部加载失败
+        （`connect ECONNREFUSED 127.0.0.1:8021`），且不会自愈。
+        看门狗负责发现这种情况并按退避策略自动重启。
+        """
+        if self._watchdog_thread and self._watchdog_thread.is_alive():
+            return
+        self._watchdog_gen += 1
+        generation = self._watchdog_gen
+        self._watchdog_thread = threading.Thread(
+            target=self._watchdog_loop, args=(generation,), name="watchdog", daemon=True
+        )
+        self._watchdog_thread.start()
+        self.log("[watchdog] 运行期守护已启动（巡检间隔 %ds）" % int(WATCHDOG_INTERVAL))
+
+    def _watchdog_loop(self, generation: int) -> None:
+        while not self._stopping and generation == self._watchdog_gen:
+            time.sleep(WATCHDOG_INTERVAL)
+            if self._stopping or generation != self._watchdog_gen:
+                break
+            try:
+                self._watchdog_tick()
+            except Exception as exc:  # 看门狗自身绝不能崩
+                self.log(f"[watchdog] 巡检异常: {exc}")
+
+    def _watchdog_tick(self) -> None:
+        with self._lock:
+            watched = list(self._processes.keys())
+            # 启动/重启编排进行中：此时进程表本就在变，跳过本轮避免误判
+            if not watched or self._busy:
+                return
+            stopping = self._stopping
+
+        if stopping:
+            return
+
+        for key in watched:
+            with self._lock:
+                managed = self._processes.get(key)
+                if managed is None:
+                    continue
+                if managed.alive():
+                    # 存活足够久 → 认定已稳定，重置「连续崩溃」计数
+                    if managed.unstable_streak and (
+                        time.time() - managed.started_at > WATCHDOG_UNSTABLE_WINDOW
+                    ):
+                        managed.unstable_streak = 0
+                    continue
+                code = managed.exit_code()
+
+            self._restart_service(key, code)
+
+    def _restart_service(self, key: str, exit_code: Optional[int]) -> None:
+        """按退避策略重启单个服务；连续崩溃过多则放弃并上报。"""
+        with self._lock:
+            managed = self._processes.get(key)
+            if managed is None:
+                return
+            managed.unstable_streak += 1
+            streak = managed.unstable_streak
+            restarts = managed.restarts
+            # 进程存活时长：用来区分「偶发崩溃」与「起来就崩」
+            lived = time.time() - managed.started_at
+
+        if streak > WATCHDOG_UNSTABLE_LIMIT:
+            self.log(
+                f"[watchdog] {key} 连续 {streak} 次启动后很快退出，已停止自动重启；"
+                f"请检查 logs/{key}.log"
+            )
+            self.optional_failures[key] = (
+                f"{key} 反复启动失败（连续 {streak} 次），已停止自动重启"
+            )
+            with self._lock:
+                self.recovering.discard(key)
+            self._emit(ServiceState.RUNNING, self._detail_text())
+            return
+
+        # 指数退避：第 n 次等待 INTERVAL * 2^(n-1)，上限 WATCHDOG_MAX_BACKOFF
+        delay = min(WATCHDOG_INTERVAL * (2 ** (streak - 1)), WATCHDOG_MAX_BACKOFF)
+        with self._lock:
+            self.recovering.add(key)
+        self.log(
+            f"[watchdog] {key} 已退出（code={exit_code}，运行 {lived:.0f}s），"
+            f"{delay:.0f}s 后自动重启（第 {streak} 次）"
+        )
+        self._emit(ServiceState.RUNNING, self._detail_text())
+
+        # 退避期间分段休眠，保证能及时响应停止请求
+        waited = 0.0
+        while waited < delay and not self._stopping:
+            time.sleep(min(1.0, delay - waited))
+            waited += 1.0
+        if self._stopping:
+            with self._lock:
+                self.recovering.discard(key)
+            return
+
+        ok = self._spawn_service(key)
+        with self._lock:
+            self.recovering.discard(key)
+            managed = self._processes.get(key)
+            if managed is not None and ok:
+                # 关键：_spawn_service 会创建全新的 ManagedProcess，
+                # 必须把崩溃计数与重启次数「搬」过去，否则连续崩溃判定永远归零、
+                # 退避也不会升级（曾漏掉这里，导致 unstable 上限形同虚设）。
+                managed.restarts = restarts + 1
+                managed.unstable_streak = streak
+                self._last_restart_at[key] = time.time()
+        if ok:
+            self.log(f"[watchdog] {key} 已自动重启（累计 {restarts + 1} 次）")
+        else:
+            self.log(f"[watchdog] {key} 自动重启失败")
+        self._emit(ServiceState.RUNNING, self._detail_text())
+
+    def _spawn_service(self, key: str) -> bool:
+        """按服务名重新拉起对应进程（供看门狗复用）。
+
+        直接复用各服务既有的启动方法，确保重启与首启走完全相同的路径
+        （环境变量、配置渲染、健康检查都一致）。
+        """
+        try:
+            if key == "freeswitch":
+                ok = self.start_freeswitch()
+                if not ok:
+                    # 可执行文件已不存在：清理登记，避免看门狗反复重试幽灵进程
+                    with self._lock:
+                        self._processes.pop(key, None)
+                return ok
+            if key == "api":
+                return self.start_api()
+            if key == "frontend":
+                return self.start_frontend()
+        except Exception as exc:
+            self.log(f"[watchdog] {key} 重启异常: {exc}")
+        return False
+
+    def _detail_text(self) -> str:
+        """把「正在恢复」的服务拼进状态详情，避免界面误显示为一切正常。"""
+        with self._lock:
+            recovering = sorted(self.recovering)
+        if recovering:
+            return "服务运行中（正在自动恢复：" + "、".join(recovering) + "）"
+        if self.optional_failures:
+            return "服务运行中（语音引擎未就绪，广播功能受限）"
+        return "所有服务运行中"
+

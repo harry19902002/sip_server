@@ -66,6 +66,70 @@ vanilla 配置提供演示分机，可先用 `1000`、`1001` 等分机注册：
 
 演示分机只适合联调。生产环境应由业务数据库生成独立账号和强密码，并通过配置服务同步到 FreeSWITCH Directory。
 
+## 编解码（Codec）
+
+默认优先级：`OPUS,G722,PCMU,PCMA`（越靠前越优先），同时写入
+`global_codec_prefs` 与 `outbound_codec_prefs`。
+
+其中 **G722 就是 G.722 宽带语音**：实际采样率 16 kHz、码率 64 kbps、RTP 静态
+payload type 9，音频带宽 50 Hz–7 kHz。需要特别注意 RFC 3551 §4.5.2 的规定：
+G.722 的 RTP 时钟率字段**必须写 8000**（RFC 1890 误分配后为兼容而保留），
+所以 SDP 里看到的是 `a=rtpmap:9 G722/8000`。FreeSWITCH 内部仍按 16000 Hz 处理
+（日志里会显示 `Codec Activated L16 at 16000hz`）。终端与抓包工具不要拿 SDP 里的
+8000 去解码，否则会听到降速变调的声音。
+
+调整优先级：
+
+| 部署形态 | 方式 |
+| --- | --- |
+| 任意部署 | 管理端「系统配置 → 编码格式（Codec）」，勾选并调整顺序后保存（推荐） |
+| Docker Compose | `.env` 中设置 `FREESWITCH_CODEC_PREFS=G722,PCMU,PCMA`，重启 `freeswitch` |
+| Windows 便携 / 安装版 | `config.json` 的 `codec_prefs`，或环境变量 `FREESWITCH_CODEC_PREFS` |
+
+### 管理端配置编码格式
+
+「系统配置」页的**编码格式（Codec）**面板可以勾选启用的编码、用上下箭头调整
+优先级，并显示每种编码当前是「已生效」还是「待下发」：
+
+```http
+GET  /api/v1/system/codecs          # 可选清单 + 已保存顺序 + 实际生效顺序
+PATCH /api/v1/system/codecs         # 保存顺序（仅系统管理员）
+X-API-Key: <FREESWITCH_API_KEY>
+
+{ "prefs": ["G722", "PCMU", "PCMA"], "restartProfile": true }
+```
+
+服务端会用 ESL 执行 `global_setvar global_codec_prefs=...` 与
+`global_setvar outbound_codec_prefs=...`，并在 `restartProfile` 为真（默认）时
+执行 `sofia profile internal restart` 使其立即生效。
+
+⚠️ **重启 profile 会清空并重新建立该 profile 下所有终端的注册**（通常几秒）。
+因此界面上默认勾选「保存后立即重启 SIP 服务生效」，并给出明确提示；取消勾选则
+只写全局变量，等到下次 FreeSWITCH 启动才生效，但不会打断在线终端。
+
+`PATCH` 的 `restartProfile` 设为 `false`、或 `apply: false` 完全不下发，都只影响
+本次调用。若已保存但下发失败（例如 FreeSWITCH 离线），接口仍返回 `200`，并把失败
+原因放在 `applyError` 字段里 —— **不回滚已保存的配置**，避免用户在服务离线时
+无法保存偏好；界面上会以错误条提示，此时「实际生效」仍是旧值。
+
+底层实现在 `services/freeswitch-api/lib/codec-service.mjs`：`CODEC_CATALOG` 是
+可选编码清单（id 必须与 FreeSWITCH 编译/加载的模块对应），`normalizeCodecPrefs()`
+负责校验、去重与顺序归一化，`CodecService.apply()` 负责下发与重启。
+
+改完需要重启 FreeSWITCH（prefs 是启动时从 `vars.xml` 读入的）。验证：
+
+```bash
+docker compose exec freeswitch fs_cli -p "$ESL_PASSWORD" -x "show codec"
+```
+
+应能看到 `G722, 16000 Hz, 64000 bps`（若列表里没有，说明提供 G.722 的
+`mod_spandsp` 未加载，检查 `modules.conf.xml`）。播放侧无需额外配置：8 kHz 的
+WAV/MP3 会由 FreeSWITCH 重采样到 16 kHz 后再编码。
+
+> **注意**：FreeSWITCH **没有**独立的 `mod_g722`。G.722 编解码器由
+> **`mod_spandsp`** 提供，其源码位于 `src/mod/applications/mod_spandsp`
+> （不在 `src/mod/codecs/`）。写错模块名会导致加载失败。
+
 ## REST API
 
 所有 `/api/v1/*` 请求必须携带：

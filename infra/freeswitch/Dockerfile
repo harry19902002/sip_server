@@ -98,6 +98,7 @@ COPY --from=builder /opt/freeswitch-root/ /
 COPY config/modules.conf.xml /etc/freeswitch/autoload_configs/modules.conf.xml
 COPY config/acl.conf.xml /etc/freeswitch/autoload_configs/acl.conf.xml
 COPY config/preset-broadcast.xml /etc/freeswitch/dialplan/default/00_preset_broadcast.xml
+COPY config/local-extensions.xml /etc/freeswitch/dialplan/default/01_local_extensions.xml
 COPY docker-entrypoint.sh /usr/local/bin/sip-server-freeswitch-entrypoint
 
 RUN sed -i 's/\r$//' /usr/local/bin/sip-server-freeswitch-entrypoint \

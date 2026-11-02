@@ -279,3 +279,53 @@ def describe_ip(ip: str) -> str:
     if adapter.is_virtual:
         text += "（虚拟网卡）"
     return text
+
+
+# ---------------------------------------------------------------- 时间同步检查
+
+
+def ntp_source_is_proxied() -> tuple[bool, str]:
+    """检查 Windows 时间同步是否走了代理虚拟网卡。
+
+    背景：装了 Clash/Mihomo 等代理软件后，系统时间同步可能把代理的 fake-ip
+    （198.18.0.0/15）当成 NTP 服务器地址，导致时钟经虚拟网卡同步、发生跳变。
+    FreeSWITCH 对时钟跳变敏感，实测会因此静默退出，表现为管理页面能打开
+    但首页数据加载失败（ECONNREFUSED 127.0.0.1:8021）。
+
+    返回 (是否有问题, 说明文本)。任何异常都返回无问题，避免误报干扰启动。
+    """
+    try:
+        import re
+        import subprocess
+
+        completed = subprocess.run(
+            ["w32tm", "/query", "/status"],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            encoding="utf-8",
+            errors="replace",
+        )
+        output = f"{completed.stdout or ''}\n{completed.stderr or ''}"
+        match = re.search(r"\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b", output)
+        if not match:
+            return False, ""
+        source = match.group(1)
+        if is_probably_unusable(source) or _is_benchmark_range(source):
+            return True, source
+        return False, source
+    except Exception:
+        return False, ""
+
+
+def _is_benchmark_range(ip: str) -> bool:
+    """是否落在 198.18.0.0/15（代理软件常用作 fake-ip 的基准测试保留段）。"""
+    parts = ip.split(".")
+    if len(parts) != 4:
+        return False
+    try:
+        first, second = int(parts[0]), int(parts[1])
+    except ValueError:
+        return False
+    return first == 198 and second in (18, 19)
+

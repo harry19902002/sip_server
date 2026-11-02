@@ -9,6 +9,11 @@
     <load module="mod_fifo"/>
     <load module="mod_hash"/>
     <load module="mod_conference"/>
+    <!-- G.722：16 kHz 采样的宽带语音（64 kbps，RTP payload type 9）。
+         FreeSWITCH 没有独立的 mod_g722 —— G.722 编解码器由 mod_spandsp 提供
+         （源码树位于 src/mod/applications/mod_spandsp）。SDP 中按 RFC 3551
+         仍写作 G722/8000，这是 RFC 1890 的历史遗留错误。 -->
+    <load module="mod_spandsp"/>
     <load module="mod_opus"/>
     <load module="mod_loopback"/>
     <load module="mod_sofia"/>

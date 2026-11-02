@@ -22,11 +22,20 @@ export class PresetStore {
   constructor(file, { numberAvailable = () => true } = {}) {
     this.file = file;
     this.numberAvailable = numberAvailable;
-    this.state = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : { presets: [], nextNumber: 880001 };
+    this.load();
+  }
+
+  /** 载入并补全字段。构造函数与 reload() 共用，避免两份逻辑分叉。 */
+  load() {
+    this.state = existsSync(this.file) ? JSON.parse(readFileSync(this.file, "utf8")) : { presets: [], nextNumber: 880001 };
     this.state.presets ??= [];
     // Numbers are never reused, so a deleted preset's number cannot trigger another preset.
     this.state.nextNumber ??= Math.max(880000, ...this.state.presets.map((item) => Number(item.sipNumber))) + 1;
+    return this;
   }
+
+  /** 重新从磁盘加载（备份导入 / 恢复出厂设置后同步内存状态）。 */
+  reload() { return this.load(); }
   persist() {
     mkdirSync(dirname(this.file), { recursive: true });
     const temporary = `${this.file}.tmp`;

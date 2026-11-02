@@ -9,8 +9,17 @@ export class TerminalMetadataStore {
   constructor(file) {
     this.file = file;
     mkdirSync(dirname(file), { recursive: true });
-    this.names = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
+    this.load();
   }
+
+  /** 载入。构造函数与 reload() 共用。 */
+  load() {
+    this.names = existsSync(this.file) ? JSON.parse(readFileSync(this.file, "utf8")) : {};
+    return this;
+  }
+
+  /** 重新从磁盘加载（备份导入 / 恢复出厂设置后同步内存状态）。 */
+  reload() { return this.load(); }
 
   listNames() {
     return { ...this.names };

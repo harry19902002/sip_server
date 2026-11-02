@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { BroadcastService } from "../lib/broadcast-service.mjs";
+import { BroadcastService, volumeToLevel } from "../lib/broadcast-service.mjs";
 import { BroadcastStore } from "../lib/broadcast-store.mjs";
 
 function fixture() {
@@ -28,6 +28,117 @@ const validInput = {
   callerId: "9999",
   volume: 75,
 };
+
+test("maps the 0-100 volume percentage onto the FreeSWITCH -4..4 scale", () => {
+  // 50% 必须是 0：freeSWITCH 的 level 0 等于不做任何增益，是唯一的安全中性点。
+  assert.equal(volumeToLevel(50), 0);
+  assert.equal(volumeToLevel(0), -4);
+  assert.equal(volumeToLevel(100), 4);
+  // 越界与非法输入被夹紧，绝不下发会被 FreeSWITCH 静默丢弃的值。
+  assert.equal(volumeToLevel(-20), -4);
+  assert.equal(volumeToLevel(999), 4);
+  assert.ok(volumeToLevel(Number.NaN) >= -4 && volumeToLevel(Number.NaN) <= 4);
+  for (let percent = 0; percent <= 100; percent += 1) {
+    const level = volumeToLevel(percent);
+    assert.ok(Number.isInteger(level) && level >= -4 && level <= 4, `volume ${percent} produced invalid level ${level}`);
+  }
+});
+
+test("does not send the non-existent playback_volume variable when dialing", async (t) => {
+  const { directory, commands, service } = fixture();
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  await service.create({ ...validInput, targets: ["1000"] });
+  // playback_volume 在 FreeSWITCH 源码中不存在任何引用，属于无效变量；
+  // 一旦回归，音量会再次变成静默失效的假功能。
+  assert.doesNotMatch(commands[0], /playback_volume/);
+});
+
+test("applies the stored volume to the channel once it answers", async (t) => {
+  const { directory, commands, service } = fixture();
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const { broadcast } = await service.create({ ...validInput, targets: ["1000"], volume: 100 });
+  const target = broadcast.targets[0];
+
+  service.handleEvent({
+    "Event-Name": "CHANNEL_ANSWER",
+    "Unique-ID": target.channelUuid,
+    variable_sip_broadcast_id: broadcast.id,
+    variable_sip_target_id: target.id,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const volumeCommand = commands.find((command) => command.startsWith("uuid_audio "));
+  assert.ok(volumeCommand, "no uuid_audio command was issued on answer");
+  // 100% → +4，写方向（广播是往终端写音频）。
+  assert.match(volumeCommand, /^uuid_audio .+ start write level 4$/);
+});
+
+test("setVolume writes back the record and pushes the level to live channels", async (t) => {
+  const { directory, commands, service } = fixture();
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const { broadcast } = await service.create({ ...validInput, targets: ["1000", "1001"] });
+
+  const result = await service.setVolume(broadcast.id, 0);
+  assert.equal(result.broadcast.volume, 0);
+  // 两个目标都还没有应答，但都已经拿到 channelUuid，因此都应收到指令。
+  assert.equal(result.attempted, 2);
+  assert.equal(result.applied, 2);
+  const volumeCommands = commands.filter((command) => command.startsWith("uuid_audio "));
+  assert.equal(volumeCommands.length, 2);
+  volumeCommands.forEach((command) => assert.match(command, / start write level -4$/));
+});
+
+test("setVolume rejects out-of-range input and finished tasks", async (t) => {
+  const { directory, service } = fixture();
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const { broadcast } = await service.create({ ...validInput, targets: ["1000"] });
+
+  await assert.rejects(service.setVolume(broadcast.id, 101), /volume must be an integer from 0 to 100/);
+  await assert.rejects(service.setVolume(broadcast.id, 12.5), /volume must be an integer from 0 to 100/);
+  await assert.rejects(service.setVolume("missing-id", 50), /broadcast not found/);
+
+  await service.cancel(broadcast.id);
+  // 已结束的任务不允许再调音量，应提示重发。
+  await assert.rejects(service.setVolume(broadcast.id, 30), /已结束的任务不能调整音量/);
+});
+
+test("replays a finished broadcast with the original content and volume", async (t) => {
+  const { directory, commands, service } = fixture();
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const audio = "file_string:///var/lib/freeswitch/storage/media/first.wav";
+  const { broadcast } = await service.create({
+    ...validInput, targets: ["1000"], audio, volume: 20, playMode: "LOOP",
+    sourceType: "PLAYLIST", sourceId: "playlist-1", sourceName: "晨间列表",
+  });
+  await service.cancel(broadcast.id);
+
+  const before = commands.length;
+  const replayed = await service.replay(broadcast.id);
+  const repeat = replayed.broadcast;
+
+  assert.notEqual(repeat.id, broadcast.id, "replay must create a new record");
+  assert.equal(repeat.name, broadcast.name);
+  assert.equal(repeat.audio, audio);
+  assert.equal(repeat.volume, 20);
+  assert.equal(repeat.playMode, "LOOP");
+  assert.equal(repeat.sourceType, "PLAYLIST");
+  assert.equal(repeat.sourceName, "晨间列表");
+  assert.equal(repeat.replayOfId, broadcast.id);
+  assert.deepEqual(repeat.targets.map((target) => target.extension), ["1000"]);
+  // 原任务保持不可变，便于审计。
+  const original = service.get(broadcast.id);
+  assert.equal(original.state, "CANCELED");
+  assert.equal(original.replayOfId, null);
+  assert.match(commands[before], /endless_playback\(/);
+});
+
+test("replay refuses tasks that are still running", async (t) => {
+  const { directory, service } = fixture();
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const { broadcast } = await service.create({ ...validInput, targets: ["1000"] });
+  await assert.rejects(service.replay(broadcast.id), /该任务尚未结束/);
+  await assert.rejects(service.replay("missing-id"), /broadcast not found/);
+});
 
 test("creates and persists an idempotent broadcast with target jobs", async (t) => {
   const { directory, commands, service } = fixture();
