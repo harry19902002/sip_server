@@ -263,6 +263,8 @@ function Status({ children, tone = "neutral" }: { children: React.ReactNode; ton
 // 它属于个人使用偏好，换设备/换账号各自独立更符合直觉，
 // 也避免了后端多一份存储与接口。
 const SHORTCUT_STORAGE_KEY = "sip-shortcuts";
+// 侧栏二级菜单各分组的展开/收起状态，同样只存本地
+const GROUP_OPEN_STORAGE_KEY = "sip-nav-groups";
 // 最多显示的快捷入口数量；再多页面就退化成第二份导航了。
 const MAX_SHORTCUTS = 8;
 
@@ -2272,6 +2274,21 @@ export default function Home() {
   const [profileMenu, setProfileMenu] = useState(false);
   const [toast, setToast] = useState("");
   const [collapsed, setCollapsed] = useState(false);
+  /* 二级菜单：记录每个分组的展开/收起状态。
+     默认全部展开，避免升级后用户找不到原来的入口；用户的手动选择会写入
+     localStorage，下次打开保持。
+     用惰性初始化读取存储而不是在 useEffect 里 setState——后者会触发一次
+     多余的重渲染（react-hooks/set-state-in-effect）。服务端渲染阶段没有
+     window，返回空对象（全部按展开处理），客户端首帧即为最终值。 */
+  const [groupOpen, setGroupOpen] = useState<Record<string, boolean>>(() => {
+    if (typeof window === "undefined") return {};
+    try {
+      const saved = window.localStorage.getItem(GROUP_OPEN_STORAGE_KEY);
+      if (!saved) return {};
+      const parsed = JSON.parse(saved) as Record<string, boolean>;
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch { return {}; }
+  });
   const [organizationName, setOrganizationName] = useState("广播组织");
   const [theme, setTheme] = useState<Theme>(() => typeof window !== "undefined" && window.localStorage.getItem("sip-theme") === "dark" ? "dark" : "light");
   const themeLoaded = useRef(false);
@@ -2290,8 +2307,28 @@ export default function Home() {
   const role: Role = authUser?.role ?? "广播操作员";
   const saveOrganizationName = (name: string) => { setOrganizationName(name); void apiRequest("/system/config", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ organizationName: name }) }).catch(() => undefined); };
 
+  /* ---- 二级菜单的展开状态 ----
+     用 ref 记住最新值：同一个事件循环内连续调用 updateGroupOpen 时，
+     state 尚未刷新，靠 ref 才能基于「上一次的结果」累加。 */
+  const groupOpenRef = useRef<Record<string, boolean>>(groupOpen);
+  const isGroupOpen = (label: string) => groupOpen[label] ?? true;
+  const updateGroupOpen = (label: string, open: boolean) => {
+    const next = { ...groupOpenRef.current, [label]: open };
+    groupOpenRef.current = next;
+    setGroupOpen(next);
+    try { window.localStorage.setItem(GROUP_OPEN_STORAGE_KEY, JSON.stringify(next)); } catch { /* 隐私模式忽略 */ }
+  };
+  const toggleGroup = (label: string) => updateGroupOpen(label, !isGroupOpen(label));
   const pageLabel = navGroups.flatMap(g => g.items).find(item => item.key === page)?.label ?? "运行总览";
-  const go = (next: PageKey) => { setPage(next); window.scrollTo({ top: 0, behavior: "smooth" }); };
+  const go = (next: PageKey) => {
+    setPage(next);
+    // 跳到某个入口时自动展开它所在的分组，避免「点了却没看到高亮」
+    const owner = navGroups.find(group => group.items.some(item => item.key === next));
+    if (owner && !groupOpenRef.current[owner.label]) {
+      updateGroupOpen(owner.label, true);
+    }
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
   const notify = (message: string) => { setToast(message); window.setTimeout(() => setToast(""), 3600); };
   const logout = async () => { await apiRequest("/auth/logout", { method: "POST" }).catch(() => undefined); setProfileMenu(false); setAuthUser(null); setPage("shortcuts"); };
 
@@ -2303,7 +2340,31 @@ export default function Home() {
       <aside className="sidebar">
         <div className="brand"><span className="brand-mark"><i /><i /><i /></span><span><b>SIP广播系统</b><small>SIP BROADCAST</small></span></div>
         <nav aria-label="主导航">
-          {navGroups.map((group) => <div className="nav-group" key={group.label}><div className="nav-group-label">{group.label}</div>{group.items.map((item) => <button key={item.key} className={page === item.key ? "active" : ""} onClick={() => go(item.key)} title={collapsed ? item.label : undefined}><Icon>{item.icon}</Icon><span>{item.label}</span>{item.key === "tasks" && activeTaskCount > 0 && <em>{activeTaskCount}</em>}</button>)}</div>)}
+          {navGroups.map((group) => {
+            const open = isGroupOpen(group.label);
+            // 分组内有当前页时给个提示点：收起状态下也能看出「当前页在这组里」
+            const containActive = group.items.some((item) => item.key === page);
+            // 侧栏整体收起时只剩图标，二级菜单没有展开的意义，强制折叠
+            const showItems = collapsed ? true : open;
+            return (
+              <div className={`nav-group ${open ? "is-open" : "is-closed"} ${containActive ? "has-active" : ""}`} key={group.label}>
+                <button
+                  type="button"
+                  className="nav-group-toggle"
+                  onClick={() => { if (collapsed) { setCollapsed(false); updateGroupOpen(group.label, true); } else { toggleGroup(group.label); } }}
+                  aria-expanded={collapsed ? undefined : open}
+                  title={collapsed ? group.label : undefined}
+                >
+                  <span className="nav-group-label">{group.label}</span>
+                  <span className="nav-group-state" aria-hidden="true">{open ? "−" : "+"}</span>
+                  {containActive && <em className="nav-group-dot" aria-hidden="true" />}
+                </button>
+                <div className="nav-group-items" hidden={!showItems}>
+                  {group.items.map((item) => <button key={item.key} data-page={item.key} className={page === item.key ? "active" : ""} onClick={() => go(item.key)} title={collapsed ? item.label : undefined}><Icon>{item.icon}</Icon><span>{item.label}</span>{item.key === "tasks" && activeTaskCount > 0 && <em>{activeTaskCount}</em>}</button>)}
+                </div>
+              </div>
+            );
+          })}
         </nav>
         <div className="system-health"><div><i /><span><b>{systemHealthy ? "通信服务正常" : "通信服务异常"}</b><small>{systemHealthy ? "运行状态已同步" : "请检查服务连接"}</small></span></div><button onClick={() => go("system")}>›</button></div>
         <div className="version-tag" title={`程序版本 ${appVersion || "开发模式"}`}><span>版本</span><b>{formatAppVersion(appVersion)}</b></div>
