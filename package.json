@@ -29,6 +29,8 @@
     "launcher:test": ".venv/Scripts/python.exe tests/test_watchdog.py",
     "portable:modules:test": ".venv/Scripts/python.exe tests/test_portable_modules.py",
     "ntp:diagnose": "powershell -ExecutionPolicy Bypass -File scripts/fix-ntp-proxy.ps1 -DiagnoseOnly",
+    "ui:check": "node scripts/check-contrast.mjs && node scripts/check-line-height.mjs && node scripts/check-font-fit.mjs",
+    "ui:optimize": "python scripts/optimize-ui-readability.py",
     "freeswitch:e2e:test": "node tests/sip-broadcast.integration.mjs",
     "presets:e2e:test": "node tests/preset-broadcast.integration.mjs",
     "media:e2e:test": "node tests/media-api.integration.mjs"
