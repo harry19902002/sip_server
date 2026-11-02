@@ -531,9 +531,34 @@ class ProcessManager:
 
         if health and not self._wait_health(health, timeout=90):
             self.log(f"[{key}] 健康检查未通过: {health}")
+            # 健康检查只反映「端口没起来」，真正原因（缺模块、端口占用、
+            # 配置错误）都在进程自己的日志里。直接把末尾几行贴到启动器日志，
+            # 用户不必再去翻 logs/api.log 才能知道为什么起不来。
+            self._tail_log(log_file, key)
             return False
 
         return True
+
+    def _tail_log(self, log_path: Path, key: str, lines: int = 12) -> None:
+        """把子进程日志的最后若干行写进启动器日志，便于定位启动失败原因。"""
+        try:
+            if not log_path.is_file():
+                return
+            # 日志可能很大，只读末尾 8KB 再取最后几行，避免拖慢启动
+            with open(log_path, "rb") as handle:
+                handle.seek(0, 2)
+                size = handle.tell()
+                handle.seek(max(0, size - 8192))
+                chunk = handle.read().decode("utf-8", errors="replace")
+            tail = [line for line in chunk.splitlines() if line.strip()][-lines:]
+            if not tail:
+                return
+            self.log(f"[{key}] 进程日志末尾（完整内容见 logs/{log_path.name}）：")
+            for line in tail:
+                # 截断超长行，避免一条堆栈把界面撑爆
+                self.log(f"    {line[:300]}")
+        except OSError as exc:
+            self.log(f"[{key}] 读取日志失败: {exc}")
 
     def _wait_health(self, url: str, timeout: int) -> bool:
         """等待 HTTP 端点就绪。

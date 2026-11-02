@@ -307,6 +307,26 @@ if (-not $depsOk) {
 Copy-Item -LiteralPath (Join-Path $ProjectRoot "package.json") -Destination (Join-Path $appTarget "package.json") -Force
 Write-Ok "app/ 组装完成"
 
+# 4.6 校验后端 API 的模块依赖是否齐全
+#
+# 曾在现场踩过：便携目录里 server.mjs 引用了 lib/sip-provisioner.mjs，
+# 但该文件没被打包进去，导致 API 启动即崩（ERR_MODULE_NOT_FOUND），
+# 而启动器只报「健康检查超时」，真正原因埋在 logs/api.log 里。
+# 这里在构建阶段递归解析所有静态 import，缺文件就直接失败，
+# 不让残缺的包发出去。
+Write-Step "校验后端模块依赖"
+$depCheckScript = Join-Path $LauncherDir "check-api-deps.py"
+if (Test-Path -LiteralPath $depCheckScript) {
+    $apiDir = Join-Path $appTarget "services\freeswitch-api"
+    & $pythonForBuild $depCheckScript $apiDir
+    if ($LASTEXITCODE -ne 0) {
+        throw "后端模块依赖校验失败：便携目录中缺少被 import 的文件，请检查上面的输出"
+    }
+    Write-Ok "后端模块依赖完整"
+} else {
+    Write-Host "    跳过（未找到 check-api-deps.py）" -ForegroundColor Yellow
+}
+
 # ---------------------------------------------------------------- 5. 随包 Node
 
 Write-Step "准备 Node 运行时"
