@@ -92,7 +92,7 @@ Source: "..\dist-portable\SIPBroadcast-Portable\launcher\*"; DestDir: "{app}\lau
 
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"
-Name: "{group}\管理页面（需先启动）"; Filename: "http://127.0.0.1:3000/"
+Name: "{group}\管理页面（需先启动）"; Filename: "http://127.0.0.1:3000/"; IconFilename: "{app}\{#AppExeName}"
 Name: "{group}\{cm:UninstallProgram,{#AppName}}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"; Tasks: desktopicon
 Name: "{userappdata}\Microsoft\Internet Explorer\Quick Launch\{#AppName}"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"; Tasks: quicklaunchicon

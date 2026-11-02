@@ -527,13 +527,10 @@ class LauncherApp:
     def _build_tray(self) -> None:
         try:
             import pystray
-            from PIL import Image, ImageDraw
         except ImportError:
             self.logger.write("未安装 pystray/Pillow，托盘功能不可用（不影响服务运行）")
             return
 
-        self._tray_image = Image
-        self._tray_draw = ImageDraw
         self._pystray = pystray
 
         image = self._make_tray_icon(STATE_COLORS[ServiceState.IDLE])
@@ -552,25 +549,15 @@ class LauncherApp:
         threading.Thread(target=self.tray_icon.run, name="tray", daemon=True).start()
 
     def _make_tray_icon(self, color: str):
-        """用几何图形画一个 SIP 广播示意图标，无需外部图片资源。"""
-        size = 64
-        image = self._tray_image.new("RGBA", (size, size), (0, 0, 0, 0))
-        draw = self._tray_draw.Draw(image)
+        """托盘图标：与 exe / 安装包图标同一套图形，底板换成服务状态色。
 
-        # 圆角底板
-        draw.rounded_rectangle([2, 2, size - 3, size - 3], radius=14, fill="#1f2430")
+        形状定义在 launcher.core.icon，避免托盘一个样、桌面快捷方式另一个样。
+        Windows 托盘实际只给 16~24px，这里按 16px 出图让弧线走「加粗 + 省声波」
+        的小尺寸分支，比拿 64px 缩下去清晰得多。
+        """
+        from launcher.core.icon import build_icon
 
-        # 中心广播塔
-        draw.ellipse([size // 2 - 6, size // 2 - 6, size // 2 + 6, size // 2 + 6], fill=color)
-        draw.line([size // 2, size // 2 + 6, size // 2, size - 12], fill=color, width=4)
-
-        # 左右声波弧线
-        for offset, width in ((14, 3), (22, 3)):
-            draw.arc(
-                [size // 2 - offset - 6, size // 2 - offset, size // 2 + offset + 6, size // 2 + offset],
-                start=200, end=340, fill=color, width=width,
-            )
-        return image
+        return build_icon(16, color)
 
     def _refresh_tray_icon(self, state: ServiceState) -> None:
         if not self.tray_icon:

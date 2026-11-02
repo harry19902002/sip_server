@@ -1,6 +1,25 @@
-<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-<path d="M22 19.2727C22 20.779 20.779 22 19.2727 22H14.7273C13.221 22 12 20.779 12 19.2727V12H19.2727C20.779 12 22 13.221 22 14.7273V19.2727Z" fill="#68C4FF"/>
-<path d="M20 2C21.1046 2 22 2.89543 22 4V7C22 8.10457 21.1046 9 20 9H17C15.8954 9 15 8.10457 15 7V4C15 2.89543 15.8954 2 17 2H20Z" fill="#0C79D8"/>
-<path d="M7 15C8.10457 15 9 15.8954 9 17V20C9 21.1046 8.10457 22 7 22H4C2.89543 22 2 21.1046 2 20V17C2 15.8954 2.89543 15 4 15H7Z" fill="#0C79D8"/>
-<path d="M12 12H4.72727C3.22104 12 2 10.779 2 9.27273V4.72727C2 3.22104 3.22104 2 4.72727 2H9.27273C10.779 2 12 3.22104 12 4.72727V12Z" fill="#2E9EFF"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="SIP 广播系统">
+  <!--
+    与 launcher/core/icon.py 的几何参数一一对应（1024 画布 → 64 视口，
+    比例 1/16）：箱体 150,404-302,620 → 9.4,25.25-18.9,38.75；
+    喇叭口尖端 x=512 → 32，上下端 300/724 → 18.75/45.25；
+    声波圆心 (512,512) → (32,32)，半径 104/188 → 6.5/11.75，张角 ±48°。
+  -->
+  <defs>
+    <linearGradient id="plate" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2e8bff"/>
+      <stop offset="1" stop-color="#0b4fb3"/>
+    </linearGradient>
+  </defs>
+  <!-- 圆角底板（64 × 0.225 ≈ 14） -->
+  <rect width="64" height="64" rx="14" fill="url(#plate)"/>
+  <!-- 喇叭箱体 -->
+  <rect x="9.4" y="25.25" width="9.5" height="13.5" rx="2.5" fill="#fff"/>
+  <!-- 喇叭口：向右张开的梯形 -->
+  <path d="M18.9 25.25 L32 18.75 L32 45.25 L18.9 38.75 Z" fill="#fff"/>
+  <!-- 声波弧线（±48°，圆心在喇叭口尖端） -->
+  <path d="M36.35 27.17 A6.5 6.5 0 0 1 36.35 36.83" fill="none"
+        stroke="#fff" stroke-width="3.6" stroke-linecap="round"/>
+  <path d="M39.86 23.27 A11.75 11.75 0 0 1 39.86 40.73" fill="none"
+        stroke="#fff" stroke-width="3.5" stroke-linecap="round"/>
 </svg>

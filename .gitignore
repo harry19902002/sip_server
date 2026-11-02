@@ -50,6 +50,9 @@ __pycache__/
 # generated at package time (version stamp; 每次打包重写，不入库)
 /launcher/_build_info.py
 
+# 图标预览图（由 make_icon.py 从 app.ico 顺带导出，仅本地查看）
+/launcher/assets/app.png
+
 # runtime logs (launcher / services write here at run time)
 /logs/
 

@@ -407,11 +407,15 @@ $exeTarget = Join-Path $OutputDirectory "SIPBroadcast.exe"
 if ($SkipLauncherBuild) {
     Write-Host "    已跳过（-SkipLauncherBuild）" -ForegroundColor Yellow
 } elseif ($pythonForBuild) {
-    # 先生成应用图标（exe 与安装包都会用到）
+    # 先生成应用图标（exe 与安装包都会用到）。
+    # 每次打包都重新生成，而不是只在图标缺失时生成——否则改了 icon.py 的
+    # 图形后，仓库里那份旧 app.ico 会被一直沿用。
     $iconScript = Join-Path $LauncherDir "make_icon.py"
-    $iconPath = Join-Path $LauncherDir "assets\app.ico"
-    if ((Test-Path -LiteralPath $iconScript) -and (-not (Test-Path -LiteralPath $iconPath))) {
+    if (Test-Path -LiteralPath $iconScript) {
         & $pythonForBuild $iconScript 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "    图标生成失败，继续使用现有 app.ico" -ForegroundColor Yellow
+        }
     }
 
     Push-Location $LauncherDir

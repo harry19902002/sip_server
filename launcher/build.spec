@@ -22,6 +22,7 @@ hiddenimports = [
     "launcher",
     "launcher.core",
     "launcher.core.config",
+    "launcher.core.icon",
     "launcher.core.logger",
     "launcher.core.process",
     "launcher.core.single_instance",
